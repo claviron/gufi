@@ -173,7 +173,6 @@ A serpent, for the obvious reason. A quiet one, for a better one.
 
 ---
 
-`harness/` is the ASGI application the crate is exercised against while it is
-worked on. `ARCHITECTURE.md` has the boundaries: what the runner owns, what it
+`ARCHITECTURE.md` has the boundaries: what the runner owns, what it
 deliberately does not, and why it is its own project rather than a crate inside
 Claviron.
