@@ -70,11 +70,24 @@ pub struct Application {
 }
 
 impl Application {
+    /// Hand a request to whatever this application registered.
+    ///
+    /// Every ingress arrives here — the local listener, the fleet lane, and
+    /// whatever comes next — which is why the exchange is counted here rather
+    /// than in each of them. Claviron's edge does the same at its own single
+    /// fork, so the number means the same thing on both sides of the
+    /// transport: work this process has taken and not yet answered.
     pub(crate) fn call(
         &self,
         request: AppRequest
     ) -> BoxFuture<AppResponse> {
-        self.service.call_erased(request)
+        let exchange = claviron::runtime::activity::ACTIVITY.begin();
+        let answering = self.service.call_erased(request);
+        Box::pin(async move {
+            let response = answering.await;
+            drop(exchange);
+            response
+        })
     }
 }
 
