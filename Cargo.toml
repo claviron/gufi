@@ -1,0 +1,54 @@
+[package]
+autotests = false
+name = "gufi"
+version = "0.1.0"
+edition = "2024"
+description = "Python runner for Claviron runtime"
+publish = false
+
+# Gufi compiles a Python application's own binary against Claviron. It
+# reaches Claviron the way any consumer does — through the root facade, never
+# its internal crates — which is why it lives beside Claviron, not inside it.
+[dependencies]
+bytes = { version = "1.11" }
+async-trait = { version = "0.1" }
+pyo3 = { version = "0.29.2" }
+pyo3-async-runtimes = { version = "0.29.0", features = ["tokio-runtime"] }
+serde_json = { version = "1.0" }
+claviron = { path = "../claviron", default-features = false, features = [
+    "supervisor",
+] }
+http = { version = "1.4" }
+http-body = { version = "1.0" }
+http-body-util = { version = "0.1" }
+hyper = { version = "1.11", features = [
+    "server",
+    "http1",
+    "http2",
+] }
+hyper-util = { version = "0.1", features = [
+    "tokio",
+    "server",
+    "http1",
+    "http2",
+] }
+percent-encoding = { version = "2.3" }
+thiserror = { version = "2.0" }
+tower-service = { version = "0.3" }
+tracing = { version = "0.1" }
+tokio = { version = "1", features = ["full"] }
+
+# axum is the default road, the way it is in Claviron: `register` puts the
+# interpreter behind your router for you, and the router type comes from
+# `claviron::axum` — the one this workspace resolves — so an application never
+# negotiates an axum version with this crate.
+#
+# It is a feature rather than a fixture because the other roads stay open:
+# `register_with` needs only `tower-service`, and a warp filter or a bare
+# `service_fn` goes through it with no axum in the graph at all.
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+default = ["axum"]
+axum = ["claviron/axum"]

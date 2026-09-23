@@ -1,0 +1,14 @@
+[project]
+# The harness Gufi is pointed at while it is being worked on. It is the
+# application side of the pair, kept here so the crate root stays Rust and
+# Python lives inside its own boundary.
+#
+# No build-system and no console script on purpose: nothing here is meant to
+# be installed from an index, and the crate above is what gets compiled.
+name = "gufi-harness"
+version = "0.1.0"
+description = "ASGI application Gufi is exercised against"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi>=0.141.1",
+]
