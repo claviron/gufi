@@ -107,30 +107,34 @@ async def drive(application, control):
     done, _ = await asyncio.wait(
         (task, startup_message), return_when=asyncio.FIRST_COMPLETED
     )
-    if startup_message not in done:
-        error = task.exception()
-        detail = (
-            "ASGI application returned before lifespan startup completed"
-            if error is None
-            else _exception_text(error)
-        )
-        control.startup_failed(detail)
-        if error is not None:
-            raise error
-        raise RuntimeError(detail)
 
-    message = startup_message.result()
-    message_type = message.get("type")
-    if message_type == "lifespan.startup.failed":
-        detail = message.get("message") or "ASGI lifespan startup failed"
-        control.startup_failed(detail)
-        await _cancel(task)
-        raise RuntimeError(detail)
-    if message_type != "lifespan.startup.complete":
-        detail = f"unexpected ASGI lifespan startup message: {message_type!r}"
-        control.startup_failed(detail)
-        await _cancel(task)
-        raise RuntimeError(detail)
+    # An application that ends the lifespan scope without answering does not
+    # implement the protocol. That is allowed, and it is how most of them say
+    # so: Django raises "can only handle ASGI/HTTP connections". Refusing is
+    # not failing — what fails is `lifespan.startup.failed`, below, which an
+    # application sends only after choosing to speak the protocol.
+    lifespan = startup_message in done
+    if not lifespan:
+        error = task.exception()
+        startup_message.cancel()
+        control.lifespan_absent(
+            _exception_text(error)
+            if error is not None
+            else "the application returned without sending a lifespan message"
+        )
+    else:
+        message = startup_message.result()
+        message_type = message.get("type")
+        if message_type == "lifespan.startup.failed":
+            detail = message.get("message") or "ASGI lifespan startup failed"
+            control.startup_failed(detail)
+            await _cancel(task)
+            raise RuntimeError(detail)
+        if message_type != "lifespan.startup.complete":
+            detail = f"unexpected ASGI lifespan startup message: {message_type!r}"
+            control.startup_failed(detail)
+            await _cancel(task)
+            raise RuntimeError(detail)
 
     control.startup_complete()
     requests = set()
@@ -144,6 +148,12 @@ async def drive(application, control):
 
     if requests:
         await asyncio.gather(*requests, return_exceptions=True)
+
+    # An application that never spoke the protocol has nothing to be told the
+    # process is ending, and the scope it refused is already over.
+    if not lifespan:
+        return
+
     shutdown_message = asyncio.create_task(outgoing.get())
     await incoming.put({"type": "lifespan.shutdown"})
 
@@ -399,6 +409,25 @@ impl LifespanControl {
         message: String
     ) {
         self.report_startup(Err(message));
+    }
+
+    /// The application has no lifespan protocol, and that is allowed.
+    ///
+    /// ASGI says a server must cope with an application that does not
+    /// implement `lifespan`, and the way an application says so is by
+    /// refusing the scope — Django's handler raises "can only handle
+    /// ASGI/HTTP connections", Flask's does the same. Treating that as a boot
+    /// failure would lock out most of the ecosystem for a protocol whose whole
+    /// content here is a startup and a shutdown notification.
+    ///
+    /// Logged rather than swallowed: a genuine crash during startup work
+    /// arrives here looking exactly the same, and the only thing that tells
+    /// the two apart is the sentence the application raised.
+    fn lifespan_absent(
+        &self,
+        detail: String
+    ) {
+        tracing::debug!("🐍 application declines the ASGI lifespan protocol: {detail}");
     }
 
     fn next_exchange(
