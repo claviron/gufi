@@ -758,9 +758,29 @@ fn configure_python(
             )));
         }
         let site_packages = path_text(&site_packages)?;
+
+        // `addsitedir` appends, and it also reads the `.pth` files that
+        // editable installs and namespace packages rely on. Appending alone
+        // leaves the environment *behind* the interpreter's own directories,
+        // so a package the system happens to ship wins over the one the
+        // application installed — which is the opposite of what an
+        // environment is for. Everything it added is therefore moved to the
+        // front afterwards, keeping the order `site` chose among them.
+        let before = sys_path.len();
         py.import("site")
             .and_then(|site| site.call_method1("addsitedir", (site_packages,)))
             .map_err(|error| python_error(py, error))?;
+
+        let added: Vec<_> = (before..sys_path.len())
+            .map(|index| sys_path.get_item(index))
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|error| python_error(py, error))?;
+        for index in (before..sys_path.len()).rev() {
+            sys_path.del_item(index).map_err(|error| python_error(py, error))?;
+        }
+        for (offset, entry) in added.into_iter().enumerate() {
+            sys_path.insert(offset, entry).map_err(|error| python_error(py, error))?;
+        }
     }
     Ok(())
 }
