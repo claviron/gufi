@@ -66,4 +66,7 @@ cli = ["dep:clap"]
 # by default: most deployments put this process behind something that already
 # terminated TLS.
 tls = ["dep:rustls-pemfile", "dep:tokio-rustls"]
+# Two Rust routes to measure your own against. Off by default: routes an
+# application did not write do not belong in production by accident.
+bench = ["axum"]
 metrics = ["claviron/metrics"]

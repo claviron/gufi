@@ -197,6 +197,14 @@ pub fn register(
     state: &AppState,
     router: claviron::axum::Router
 ) -> registry::Result<()> {
+    #[cfg(feature = "bench")]
+    let router = {
+        tracing::info!(
+            "🐍 gufi bench routes mounted: /_gufi/rust and /_gufi/stats (feature \"bench\")"
+        );
+        router.merge(crate::bench::routes())
+    };
+
     let python = python_service(state);
     let unmatched = python.clone();
     let router = router.fallback_service(python).method_not_allowed_fallback(

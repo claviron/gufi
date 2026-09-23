@@ -6,6 +6,9 @@
 //! production listener policy. It accepts an already configured application
 //! and does not discover its environment.
 
+#[cfg(feature = "bench")]
+pub mod bench;
+
 mod application;
 pub mod asgi;
 mod http;
