@@ -317,19 +317,25 @@ fn error_response(
 /// is already up when the first connection arrives. It stops when its
 /// generation is cancelled: the accept loop ends, connections in flight finish,
 /// and only then does the future return.
+/// Every socket this process answers on, as one runnable.
+///
+/// One provider rather than one per socket, because the registry resolves by
+/// type: two of these would be the same type twice. It is also the honest
+/// shape — the listeners share a lifetime, a cancellation and an application,
+/// and differ only in where they accept.
 pub(crate) struct HttpIngress {
-    bind: Bind,
+    binds: Vec<Bind>,
     protocols: Protocols,
     trust: Arc<Trust>
 }
 
 impl HttpIngress {
     pub(crate) fn new(
-        bind: Bind,
+        binds: Vec<Bind>,
         protocols: Protocols,
         trust: Arc<Trust>
     ) -> Self {
-        Self { bind, protocols, trust }
+        Self { binds, protocols, trust }
     }
 }
 
@@ -370,26 +376,44 @@ impl Runnable<AppState> for HttpIngress {
             .resolve::<Application>()
             .ok_or_else(|| registry::Error::msg("no application service is registered"))?;
 
-        let server = Server::bind(self.bind.clone(), self.protocols, Arc::clone(&self.trust))
-            .await
-            .map_err(|error| registry::Error::msg(error.to_string()))?;
-        // Info on purpose, unlike the rest of this crate: an address is the
-        // thing an operator looks for.
-        tracing::info!(
-            trusted = self.trust.is_empty().then_some("nobody").unwrap_or("configured peers"),
-            "🐍 gufi listening on {}",
-            server.bound().describe()
-        );
+        let mut listeners = JoinSet::new();
+        for bind in &self.binds {
+            let server = Server::bind(bind.clone(), self.protocols, Arc::clone(&self.trust))
+                .await
+                .map_err(|error| registry::Error::msg(error.to_string()))?;
+            // Info on purpose, unlike the rest of this crate: an address is
+            // the thing an operator looks for.
+            tracing::info!(
+                trusted = if self.trust.is_empty() { "nobody" } else { "configured peers" },
+                "🐍 gufi listening on {}",
+                server.bound().describe()
+            );
 
-        server
-            .serve(
-                move |request| {
-                    let application = Arc::clone(&application);
-                    async move { application.call(request).await }
-                },
-                context.cancelled()
-            )
-            .await
-            .map_err(|error| registry::Error::msg(error.to_string()))
+            let application = Arc::clone(&application);
+            let cancelled = context.clone();
+            listeners.spawn(async move {
+                server
+                    .serve(
+                        move |request| {
+                            let application = Arc::clone(&application);
+                            async move { application.call(request).await }
+                        },
+                        cancelled.cancelled()
+                    )
+                    .await
+            });
+        }
+
+        // Every listener is bound before any of them is waited on, so a port
+        // already taken is a boot failure rather than a process that half
+        // serves.
+        while let Some(finished) = listeners.join_next().await {
+            match finished {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => return Err(registry::Error::msg(error.to_string())),
+                Err(error) => return Err(registry::Error::msg(error.to_string()))
+            }
+        }
+        Ok(())
     }
 }

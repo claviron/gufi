@@ -300,9 +300,9 @@ impl Runner {
                     // the one name the edge knows.
                     state.registry_ref().insert(Arc::new(OrbitIngress::new(application_name)))?;
                 }
-                for bind in binds {
+                if !binds.is_empty() {
                     state.registry_ref().insert(Arc::new(HttpIngress::new(
-                        bind,
+                        binds,
                         protocols,
                         Arc::clone(&trust)
                     )))?;

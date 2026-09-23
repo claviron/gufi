@@ -35,7 +35,14 @@ use std::path::PathBuf;
 /// else.
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "cli", derive(clap::Parser))]
-#[cfg_attr(feature = "cli", command(name = "gufi", about = "Run a Python application on Claviron"))]
+#[cfg_attr(
+    feature = "cli",
+    command(
+        name = "gufi",
+        about = "Run a Python application on Claviron",
+        long_about = None
+    )
+)]
 pub struct GufiOptions {
     /// What this application is called. The edge routes to this name.
     #[cfg_attr(feature = "cli", arg(short, long))]
