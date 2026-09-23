@@ -26,6 +26,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -250,6 +251,17 @@ async fn serve(
     };
     let origin = exchange.origin as usize;
     let correlation = exchange.correlation;
+    // Measured, not budgeted. Nothing here decides anything from the clock —
+    // it is read so an operator can see what a request cost, which is the one
+    // number neither side can infer from the other's logs.
+    let arrived = Instant::now();
+    tracing::debug!(
+        correlation,
+        origin,
+        "🛰 → {} {} on lane {lane}",
+        exchange.method,
+        exchange.path
+    );
 
     // The slot the edge created carries both bodies: the request arrives on
     // one direction and the reply leaves on the other.
@@ -300,34 +312,47 @@ async fn serve(
     // The frame first and the body after it. The edge cannot start answering
     // its client without a status, and a body longer than the stream's window
     // would wait for a reader that has not been told to read yet.
+    let status = reply.status;
     match reply.encode() {
         Ok(bytes) => {
             if let Err(error) = segment.inbox().write(origin, &bytes) {
                 // Nobody to tell: the caller's lane is full or its process is
                 // gone, and either way the answer has nowhere to go.
-                tracing::debug!("exchange {correlation} reply was not delivered: {error}");
+                tracing::debug!(correlation, "🛰 ✗ reply was not delivered: {error}");
                 return;
             }
         }
         Err(error) => {
-            tracing::debug!("exchange {correlation} reply does not fit a frame: {error}");
+            tracing::debug!(correlation, "🛰 ✗ reply does not fit a frame: {error}");
             return;
         }
     }
+    // The head is away. Timed separately from the body because that is the
+    // moment the edge can start answering its client, and on a streamed
+    // response the two are nothing alike.
+    let answered = arrived.elapsed();
 
+    let mut sent = 0usize;
     if let Some(outgoing) = reply_body.as_mut() {
         let bytes =
             response_body.collect().await.map_or_else(|_| Bytes::new(), |body| body.to_bytes());
+        sent = bytes.len();
         if !bytes.is_empty()
             && let Err(error) = outgoing.write_all(&bytes).await
         {
-            tracing::debug!("exchange {correlation} reply body was cut short: {error}");
+            tracing::debug!(correlation, "🛰 ✗ reply body was cut short: {error}");
             return;
         }
         if let Err(error) = outgoing.shutdown().await {
-            tracing::debug!("exchange {correlation} reply body did not close: {error}");
+            tracing::debug!(correlation, "🛰 ✗ reply body did not close: {error}");
         }
     }
+
+    tracing::debug!(
+        correlation,
+        "🛰 ← {status} in {:?} (head {answered:?}, {sent} B)",
+        arrived.elapsed()
+    );
 }
 
 /// Rebuild the request the edge took apart.
