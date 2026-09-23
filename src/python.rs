@@ -6,7 +6,30 @@ use claviron::Server;
 use claviron::runtime::{AppState, registry};
 
 use crate::application::PythonApplicationService;
+use crate::fleet::FleetIngress;
 use crate::http::DevIngress;
+
+/// Which door this process answers through.
+///
+/// One decision, taken when the process is started rather than written into
+/// the application: the same binary, the same `configure`, the same routes,
+/// reached two different ways. Nothing in the application sees this — a
+/// request arrives as a request either way.
+///
+/// This is not Claviron's `RunMode`, which says whether a process is a master,
+/// a worker or standalone. That is the process model; this is the door.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RunMode {
+    /// A plain HTTP listener on this machine, for writing the application.
+    ///
+    /// The default, because it is the one that needs nothing else running.
+    #[default]
+    Dev,
+    /// No listener at all. The process joins the shared fleet under its
+    /// application name and waits on its lane, and a Claviron edge reaches it
+    /// there — over shared memory, with no socket between them.
+    Fleet
+}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -35,7 +58,7 @@ pub struct Runner {
     application_name: Option<String>,
     application_root: Option<PathBuf>,
     virtual_environment: Option<PathBuf>,
-    fleet_name: Option<String>,
+    mode: RunMode,
     address: SocketAddr
 }
 
@@ -46,20 +69,23 @@ impl Runner {
             application_name: None,
             application_root: None,
             virtual_environment: None,
-            fleet_name: None,
+            mode: RunMode::Dev,
             address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000)
         }
     }
 
-    /// What this process is called in its fleet.
+    /// What this application is called.
     ///
-    /// It defaults to the working directory's name, which is convenient and
-    /// also the reason to state it. This is an address: two processes in one
-    /// fleet cannot share it, because the instance lock is held under it, and
-    /// a Claviron edge serving this application names it in its own
-    /// configuration the way it names a PHP or JavaScript one. The edge
-    /// resolves it over shared memory, so the two spellings have to be the
-    /// same — and a directory rename would silently break that.
+    /// The only name there is. It defaults to the working directory's name,
+    /// which is convenient and also the reason to state it: this is an
+    /// address. A Claviron edge names it in its own configuration the way it
+    /// names a PHP or JavaScript application, and finds this process by it in
+    /// shared memory — so the two spellings have to match, and a directory
+    /// rename would silently break that.
+    ///
+    /// Several processes may answer to it. They take a lane each and know
+    /// nothing about each other; the edge reads the lanes serving the name and
+    /// picks the idlest. Nothing has to be told that a new one started.
     pub fn application_name(
         mut self,
         name: impl Into<String>
@@ -84,22 +110,18 @@ impl Runner {
         self
     }
 
-    /// The Orbit fleet this process joins.
+    /// Which door to answer through: a local listener, or the shared fleet.
     ///
-    /// It defaults to the application's own name, never to Claviron's `clv`.
-    /// Shared memory outlives the process that made it, so a runner that
-    /// defaulted into an edge's fleet would map segments belonging to a server
-    /// it knows nothing about. Joining one is a decision, and it is stated
-    /// here.
-    ///
-    /// This is where several applications meet: they share a fleet name and
-    /// differ by [`Runner::application_name`], which is what lets one edge
-    /// reach all of them over shared memory.
-    pub fn fleet_name(
+    /// There is no fleet name to go with it. The transport's is the same on
+    /// every process on the machine — an edge worker and an application find
+    /// each other because they opened the same segment — and this process's
+    /// own fleet is named after the application, which is a name the runner
+    /// already has. Neither is a question for the application to answer.
+    pub fn mode(
         mut self,
-        fleet_name: impl Into<String>
+        mode: RunMode
     ) -> Self {
-        self.fleet_name = Some(fleet_name.into());
+        self.mode = mode;
         self
     }
 
@@ -141,13 +163,18 @@ impl Runner {
         };
         let virtual_environment =
             self.virtual_environment.unwrap_or_else(|| application_root.join(".venv"));
-        let fleet_name = self.fleet_name.unwrap_or_else(|| application_name.clone());
         let target = self.target;
         let address = self.address;
+        let mode = self.mode;
+        let ingress_name = application_name.clone();
 
         Server::new()
-            .name(application_name)
-            .fleet_name(fleet_name)
+            .name(application_name.clone())
+            // This process's own fleet, holding its workers and its metrics —
+            // not the shared one the transport meets in, and never Claviron's
+            // `clv`: an application has no business mapping a server's
+            // internal state, and a server has none mapping an application's.
+            .fleet_name(application_name)
             .config_dir(&application_root)
             .register(move |state| {
                 // The invocation router is already registered: Claviron's own
@@ -164,7 +191,17 @@ impl Runner {
                 configure(state)?;
                 crate::routing::ensure_application(state)?;
 
-                state.registry_ref().insert(Arc::new(DevIngress::new(address)))?;
+                // One door, chosen once. Registering both would put two
+                // ingresses on one interpreter, and the second would be a
+                // surprise to whoever started the first.
+                match mode {
+                    RunMode::Dev => {
+                        state.registry_ref().insert(Arc::new(DevIngress::new(address)))?;
+                    }
+                    RunMode::Fleet => {
+                        state.registry_ref().insert(Arc::new(FleetIngress::new(ingress_name)))?;
+                    }
+                }
                 Ok(())
             })
             .serve()

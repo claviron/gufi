@@ -17,6 +17,7 @@ pyo3-async-runtimes = { version = "0.29.0", features = ["tokio-runtime"] }
 serde_json = { version = "1.0" }
 claviron = { path = "../claviron", default-features = false, features = [
     "supervisor",
+    "orbit",
 ] }
 http = { version = "1.4" }
 http-body = { version = "1.0" }

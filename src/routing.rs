@@ -51,6 +51,16 @@ pub struct PeerAddrs {
     pub server: SocketAddr
 }
 
+/// The scheme the request arrived under.
+///
+/// `http::Uri` carries one only in absolute form, and a request read off a
+/// socket or out of a frame has a path. The ingress knows — a TLS listener
+/// served it, or an edge put it in the exchange — so it says here rather than
+/// letting the scope guess. An ingress that does not know attaches nothing and
+/// the scope reports `http`, which is what a plain listener is.
+#[derive(Clone, Debug)]
+pub struct RequestScheme(pub String);
+
 /// The service this application answers requests with, as the runner holds it.
 ///
 /// Registration erases the concrete type so one ingress can drive whatever the
@@ -294,9 +304,13 @@ where
         Err(error) => return text_response(StatusCode::BAD_REQUEST, error.to_string())
     };
 
+    let scheme = match parts.extensions.get::<RequestScheme>() {
+        Some(scheme) => scheme.0.clone(),
+        None => parts.uri.scheme_str().unwrap_or("http").to_owned()
+    };
     let scope = HttpRequest {
         method: parts.method.as_str().to_owned(),
-        scheme: parts.uri.scheme_str().unwrap_or("http").to_owned(),
+        scheme,
         http_version: http_version(parts.version).to_owned(),
         path: percent_decode_str(parts.uri.path()).decode_utf8_lossy().into_owned(),
         raw_path: parts.uri.path().as_bytes().to_vec(),

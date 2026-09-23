@@ -8,6 +8,7 @@
 
 mod application;
 pub mod asgi;
+mod fleet;
 mod http;
 mod python;
 pub mod routing;
@@ -17,7 +18,9 @@ pub mod routing;
 /// end up with a second one.
 #[cfg(feature = "axum")]
 pub use claviron::axum;
-pub use python::{Error, Result, Runner};
+pub use python::{Error, Result, RunMode, Runner};
 #[cfg(feature = "axum")]
 pub use routing::register;
-pub use routing::{AppRequest, AppResponse, PeerAddrs, PythonService, register_with};
+pub use routing::{
+    AppRequest, AppResponse, PeerAddrs, PythonService, RequestScheme, register_with
+};

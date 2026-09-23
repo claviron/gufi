@@ -47,11 +47,7 @@ use gufi::Runner;
 
 #[tokio::main]
 async fn main() -> gufi::Result<()> {
-    Runner::new("main:app")
-        .application_name("checkout")
-        .fleet_name("checkout")
-        .run(app::configure)
-        .await
+    Runner::new("main:app").application_name("checkout").run(app::configure).await
 }
 ```
 

@@ -42,7 +42,7 @@ special status:
 |---|---|
 | `PythonApplicationService` | `boot()` brings the interpreter up and drives ASGI lifespan startup; `finalize()` takes it down. Declares `ProviderOrder::after::<InvocationRouter>()`, because its boot resolves that router. |
 | `Application` | holds the service the application registered. No lifecycle of its own — a registry entry, not a stage. |
-| `DevIngress` | `Runnable`. Binds the development listener, serves until its generation is cancelled, then finishes what it accepted. |
+| `DevIngress` **or** `FleetIngress` | `Runnable`, and exactly one of them: `RunMode` decides which is registered. One binds a listener, the other binds nothing and takes a lane in the shared fleet. Both serve until their generation is cancelled, then finish what they accepted. |
 
 The order that falls out is the order that matters: the interpreter is up
 before any runnable is spawned, and it goes down after they have drained. A
@@ -88,22 +88,30 @@ The `axum` feature exists because naming `axum::Router` in a signature means
 this crate and the application must resolve the same axum. `gufi::axum`
 re-exports Claviron's, so they cannot end up with two.
 
-## Names are addresses
+## One name, and it is an address
 
-Two of them, separate on purpose:
+`application_name` is the only name there is. The instance lock is held under
+it, and a Claviron edge serving this application names it in its own
+configuration the way it names a PHP or JavaScript one — so the two spellings
+have to match. It defaults to the working directory's name, which is
+convenient and is also why a starter kit states it: a directory rename would
+move an address.
 
-- **`application_name`** — what this process is called in its fleet. The
-  instance lock is held under it, and a Claviron edge serving this application
-  names it in its own configuration the way it names a PHP or JavaScript one.
-  The edge resolves it over shared memory, so the two spellings have to match.
-- **`fleet_name`** — the shared namespace, and therefore the shared memory this
-  process maps. It defaults to the application name and never to Claviron's
-  `clv`: shared memory outlives the process that made it, so defaulting into an
-  edge's fleet would map segments belonging to a server this process knows
-  nothing about.
+There is no fleet name to state beside it. Two fleets exist and neither is a
+question for the application:
 
-Both default from the working directory, which is convenient and is also why a
-starter kit states them: a directory rename would move an address.
+- This process's own, holding its workers and its metrics, named after the
+  application. Never Claviron's `clv` — shared memory outlives the process
+  that made it, and defaulting into an edge's fleet would map segments
+  belonging to a server this process knows nothing about.
+- The shared one, where the transport's tables live. It is the same on every
+  process on the machine, so an edge worker and an application find each other
+  because they opened the same segment rather than because either was told
+  about the other.
+
+Several processes may answer to one application name. They take a lane each
+and know nothing about each other; the edge reads the lanes serving the name
+and picks the idlest one. Nothing has to be told that another started.
 
 ## The ASGI engine
 
@@ -159,11 +167,39 @@ request attaches them and the bridge reads them there. Nothing is invented: an
 ingress that does not know an address does not attach one, and the scope
 reports `None`.
 
+## Fleet ingress
+
+`RunMode::Fleet` binds nothing. The process joins the shared fleet, takes a
+lane, writes its application name in it, and waits — and a Claviron edge asked
+for that name writes an exchange into the lane. The service that answers is
+the one `DevIngress` would have called, so `configure` never learns which door
+a request came through.
+
+**Nobody is told about anybody.** There is no registration call, no supervisor
+of application processes and no pool. This process starts on its own, and
+introducing itself *is* taking the lane. Several processes may serve one name
+without knowing about each other; the edge reads the lanes serving it and
+picks the idlest, which is a number it reads rather than one anybody reports.
+
+**The lane is read by a parked thread.** It waits on the lane's wake word — a
+futex, or `os_sync_wait_on_address` on macOS — and the wait ends because
+someone wrote, not because an interval elapsed. Frames cross to Tokio over a
+channel as deep as the lane itself, so there is one place that can be full and
+one refusal to explain. Shutdown releases the lane first, so the edge stops
+choosing this process, and then *wakes* the thread rather than waiting out a
+timeout it does not have.
+
+A host with no shared-memory wait primitive is refused at boot. The
+alternative would be a poll, and a poll is this transport's whole point
+undone.
+
 ## Production
 
 In production a Claviron edge terminates TLS, routes vhosts and serves static
 files, and reaches this process by name over Orbit shared memory instead of a
-socket.
+socket. For that edge this is a vhost like any other: a document root for
+static files, and a name for everything else. It knows the name and nothing
+about the virtual environment behind it.
 
 This is the shape every Python deployment already has — nginx in front of
 gunicorn, Apache's `WSGIDaemonProcess`, one process per application behind a
