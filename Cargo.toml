@@ -53,3 +53,4 @@ tempfile = "3"
 [features]
 default = ["axum"]
 axum = ["claviron/axum"]
+metrics = ["claviron/metrics"]

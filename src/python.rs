@@ -56,6 +56,7 @@ pub enum Error {
 pub struct Runner {
     target: String,
     application_name: Option<String>,
+    instance_name: Option<String>,
     application_root: Option<PathBuf>,
     virtual_environment: Option<PathBuf>,
     mode: RunMode,
@@ -67,6 +68,7 @@ impl Runner {
         Self {
             target: target.into(),
             application_name: None,
+            instance_name: None,
             application_root: None,
             virtual_environment: None,
             mode: RunMode::Dev,
@@ -91,6 +93,34 @@ impl Runner {
         name: impl Into<String>
     ) -> Self {
         self.application_name = Some(name.into());
+        self
+    }
+
+    /// What *this process* is called, as distinct from what it serves.
+    ///
+    /// Several processes may answer to one application name, and they are
+    /// independent: separately started, separately stopped, unaware of each
+    /// other. What they cannot share is Claviron's own identity — the
+    /// instance lock is held under this name, and so is the fleet carrying
+    /// this process's workers, metrics and events. Two processes sharing it
+    /// would both be node zero of one fleet and would write over each other's
+    /// state, which is what the lock refuses.
+    ///
+    /// So: the application name is the address, shared; this is the identity,
+    /// unique. It defaults to the application name, which is right for the
+    /// common case of one process, and a second process states it:
+    ///
+    /// ```ignore
+    /// Runner::new("main:app").application_name("orders").instance_name("orders-2")
+    /// ```
+    ///
+    /// Nothing about the address changes — the edge still writes to `orders`
+    /// and both processes are targets for it.
+    pub fn instance_name(
+        mut self,
+        name: impl Into<String>
+    ) -> Self {
+        self.instance_name = Some(name.into());
         self
     }
 
@@ -163,18 +193,23 @@ impl Runner {
         };
         let virtual_environment =
             self.virtual_environment.unwrap_or_else(|| application_root.join(".venv"));
+        let instance_name = self.instance_name.unwrap_or_else(|| application_name.clone());
         let target = self.target;
         let address = self.address;
         let mode = self.mode;
-        let ingress_name = application_name.clone();
 
         Server::new()
-            .name(application_name.clone())
+            // The instance, not the application: the lock is held under this
+            // name, and a second process serving the same application states
+            // its own.
+            .name(instance_name.clone())
             // This process's own fleet, holding its workers and its metrics —
             // not the shared one the transport meets in, and never Claviron's
             // `clv`: an application has no business mapping a server's
             // internal state, and a server has none mapping an application's.
-            .fleet_name(application_name)
+            // Per instance rather than per application, because two processes
+            // in one fleet would both be node zero of it.
+            .fleet_name(instance_name)
             .config_dir(&application_root)
             .register(move |state| {
                 // The invocation router is already registered: Claviron's own
@@ -199,7 +234,11 @@ impl Runner {
                         state.registry_ref().insert(Arc::new(DevIngress::new(address)))?;
                     }
                     RunMode::Fleet => {
-                        state.registry_ref().insert(Arc::new(FleetIngress::new(ingress_name)))?;
+                        // The lane advertises what this process *serves*,
+                        // which is the one name the edge knows.
+                        state
+                            .registry_ref()
+                            .insert(Arc::new(FleetIngress::new(application_name)))?;
                     }
                 }
                 Ok(())
