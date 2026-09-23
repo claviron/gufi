@@ -39,6 +39,7 @@ use tokio::net::{TcpListener, UnixListener};
 use tokio::task::JoinSet;
 
 use crate::routing::{AppRequest, AppResponse, Application, PeerAddrs, RequestScheme};
+use crate::trust::Trust;
 
 pub(crate) type Result<T> = std::result::Result<T, Error>;
 
@@ -122,13 +123,15 @@ impl Listener {
 pub(crate) struct Server {
     listener: Listener,
     bind: Bind,
-    protocols: Protocols
+    protocols: Protocols,
+    trust: Arc<Trust>
 }
 
 impl Server {
     pub(crate) async fn bind(
         bind: Bind,
-        protocols: Protocols
+        protocols: Protocols,
+        trust: Arc<Trust>
     ) -> Result<Self> {
         let listener = Listener::bind(&bind).await?;
         let bind = match (&listener, bind) {
@@ -136,7 +139,7 @@ impl Server {
             (Listener::Tcp(listener), _) => Bind::Tcp(listener.local_addr()?),
             (_, other) => other
         };
-        Ok(Self { listener, bind, protocols })
+        Ok(Self { listener, bind, protocols, trust })
     }
 
     pub(crate) fn bound(&self) -> &Bind {
@@ -168,13 +171,16 @@ impl Server {
                     let (stream, peer) = accepted?;
                     let handler = handler.clone();
                     let protocols = self.protocols;
+                    let trust = Arc::clone(&self.trust);
                     connections.spawn(async move {
                         match stream {
                             Accepted::Tcp(stream) => {
-                                serve_connection(stream, peer, local, protocols, handler).await
+                                serve_connection(stream, peer, local, protocols, trust, handler)
+                                    .await
                             }
                             Accepted::Uds(stream) => {
-                                serve_connection(stream, None, None, protocols, handler).await
+                                serve_connection(stream, None, None, protocols, trust, handler)
+                                    .await
                             }
                         }
                     });
@@ -223,6 +229,7 @@ async fn serve_connection<I, H, HF>(
     peer: Option<SocketAddr>,
     server: Option<SocketAddr>,
     protocols: Protocols,
+    trust: Arc<Trust>,
     handler: H
 ) -> Result<()>
 where
@@ -230,7 +237,9 @@ where
     H: Fn(AppRequest) -> HF + Clone + Send + Sync + 'static,
     HF: Future<Output = AppResponse> + Send + 'static
 {
-    let service = service_fn(move |request| handle_request(request, peer, server, handler.clone()));
+    let service = service_fn(move |request| {
+        handle_request(request, peer, server, Arc::clone(&trust), handler.clone())
+    });
     let io = TokioIo::new(stream);
     match (protocols.h1, protocols.h2) {
         (true, false) => {
@@ -243,12 +252,10 @@ where
         }
         // Whatever the client speaks: HTTP/1 with an upgrade, or HTTP/2 with
         // prior knowledge.
-        _ => {
-            hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
-                .serve_connection(io, service)
-                .await
-                .map_err(|error| Error::Io(std::io::Error::other(error.to_string())))?
-        }
+        _ => hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
+            .serve_connection(io, service)
+            .await
+            .map_err(|error| Error::Io(std::io::Error::other(error.to_string())))?
     }
     Ok(())
 }
@@ -257,12 +264,23 @@ async fn handle_request<H, HF>(
     request: Request<Incoming>,
     peer: Option<SocketAddr>,
     server: Option<SocketAddr>,
+    trust: Arc<Trust>,
     handler: H
 ) -> std::result::Result<AppResponse, Infallible>
 where
     H: Fn(AppRequest) -> HF,
     HF: Future<Output = AppResponse>
 {
+    // Framing two parsers could read differently, refused before anything
+    // reads it as a request. Claviron's own check, not a second opinion.
+    if let Err(error) = claviron::http::forwarding::reject_request_smuggling(&request.headers()) {
+        return Ok(error_response(StatusCode::BAD_REQUEST, error.to_string()));
+    }
+
+    // Who the client is, and under which scheme — the socket's answer unless
+    // the peer is one whose word this launch takes.
+    let resolved = trust.resolve(peer, request.headers());
+
     let (parts, body) = request.into_parts();
     let body = match body.collect().await {
         Ok(body) => body.to_bytes(),
@@ -274,10 +292,12 @@ where
     // there; one that does not never sees them. A Unix socket has none, and
     // the scope then reports none.
     let mut request = Request::from_parts(parts, Full::new(body));
-    if let (Some(client), Some(server)) = (peer, server) {
+    if let (Some(client), Some(server)) = (resolved.client, server) {
         request.extensions_mut().insert(PeerAddrs { client, server });
     }
-    request.extensions_mut().insert(RequestScheme("http".to_owned()));
+    request
+        .extensions_mut()
+        .insert(RequestScheme(resolved.scheme.unwrap_or_else(|| "http".to_owned())));
 
     Ok(handler(request).await)
 }
@@ -299,15 +319,17 @@ fn error_response(
 /// and only then does the future return.
 pub(crate) struct HttpIngress {
     bind: Bind,
-    protocols: Protocols
+    protocols: Protocols,
+    trust: Arc<Trust>
 }
 
 impl HttpIngress {
     pub(crate) fn new(
         bind: Bind,
-        protocols: Protocols
+        protocols: Protocols,
+        trust: Arc<Trust>
     ) -> Self {
-        Self { bind, protocols }
+        Self { bind, protocols, trust }
     }
 }
 
@@ -348,12 +370,16 @@ impl Runnable<AppState> for HttpIngress {
             .resolve::<Application>()
             .ok_or_else(|| registry::Error::msg("no application service is registered"))?;
 
-        let server = Server::bind(self.bind.clone(), self.protocols)
+        let server = Server::bind(self.bind.clone(), self.protocols, Arc::clone(&self.trust))
             .await
             .map_err(|error| registry::Error::msg(error.to_string()))?;
         // Info on purpose, unlike the rest of this crate: an address is the
         // thing an operator looks for.
-        tracing::info!("🐍 gufi listening on {}", server.bound().describe());
+        tracing::info!(
+            trusted = self.trust.is_empty().then_some("nobody").unwrap_or("configured peers"),
+            "🐍 gufi listening on {}",
+            server.bound().describe()
+        );
 
         server
             .serve(

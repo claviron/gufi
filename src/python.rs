@@ -6,8 +6,9 @@ use claviron::Server;
 use claviron::runtime::{AppState, registry};
 
 use crate::application::PythonApplicationService;
-use crate::orbit::OrbitIngress;
 use crate::http::{Bind, HttpIngress, Protocols};
+use crate::orbit::OrbitIngress;
+use crate::trust::{Network, Trust};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -39,7 +40,8 @@ pub struct Runner {
     virtual_environment: Option<PathBuf>,
     orbit: bool,
     binds: Vec<Bind>,
-    protocols: Protocols
+    protocols: Protocols,
+    trusted: Vec<Network>
 }
 
 impl Runner {
@@ -52,7 +54,8 @@ impl Runner {
             virtual_environment: None,
             orbit: false,
             binds: Vec::new(),
-            protocols: Protocols::default()
+            protocols: Protocols::default(),
+            trusted: Vec::new()
         }
     }
 
@@ -147,6 +150,18 @@ impl Runner {
         self
     }
 
+    /// Whose forwarding headers to believe.
+    ///
+    /// Nobody, unless stated. A Unix socket is trusted whatever this says:
+    /// opening it already took the operator's permission.
+    pub fn trusted(
+        mut self,
+        networks: impl IntoIterator<Item = Network>
+    ) -> Self {
+        self.trusted.extend(networks);
+        self
+    }
+
     /// Which HTTP versions the sockets accept. Both, unless told otherwise.
     pub fn protocols(
         mut self,
@@ -173,6 +188,7 @@ impl Runner {
             uds,
             h1,
             h2,
+            trusted,
             root,
             venv
         } = options;
@@ -194,6 +210,7 @@ impl Runner {
         if h1 || h2 {
             self.protocols = Protocols::resolve(h1, h2);
         }
+        self.trusted.extend(trusted);
         if let Some(root) = root {
             self.application_root = Some(root);
         }
@@ -236,6 +253,7 @@ impl Runner {
         let instance_name = self.instance_name.unwrap_or_else(|| application_name.clone());
         let target = self.target;
         let protocols = self.protocols;
+        let trust = Arc::new(Trust::new(self.trusted));
         let orbit = self.orbit;
         // A process with no door would boot an interpreter nothing can reach.
         // The first thing a Python developer runs has no arguments, so that
@@ -283,7 +301,11 @@ impl Runner {
                     state.registry_ref().insert(Arc::new(OrbitIngress::new(application_name)))?;
                 }
                 for bind in binds {
-                    state.registry_ref().insert(Arc::new(HttpIngress::new(bind, protocols)))?;
+                    state.registry_ref().insert(Arc::new(HttpIngress::new(
+                        bind,
+                        protocols,
+                        Arc::clone(&trust)
+                    )))?;
                 }
                 Ok(())
             })

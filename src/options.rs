@@ -27,7 +27,6 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-
 /// What a launch decided, in the shape the runner reads.
 ///
 /// Every field is optional in the sense that `None` leaves the runner's own
@@ -69,6 +68,11 @@ pub struct GufiOptions {
     /// Accept HTTP/2 on the sockets, cleartext or otherwise.
     #[cfg_attr(feature = "cli", arg(long))]
     pub h2: bool,
+
+    /// Peers whose forwarding headers to believe: an address or a CIDR,
+    /// repeatable. Nobody, unless stated.
+    #[cfg_attr(feature = "cli", arg(long = "trusted"))]
+    pub trusted: Vec<crate::trust::Network>,
 
     /// The application root. Defaults to the working directory.
     #[cfg_attr(feature = "cli", arg(long))]

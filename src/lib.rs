@@ -8,22 +8,24 @@
 
 mod application;
 pub mod asgi;
-mod orbit;
 mod http;
 mod options;
+mod orbit;
 mod python;
 pub mod routing;
+pub mod trust;
 
 /// The axum `register` builds against — Claviron's, re-exported so an
 /// application reaches it through the crate it actually depends on and cannot
 /// end up with a second one.
 #[cfg(feature = "axum")]
 pub use claviron::axum;
-pub use options::GufiOptions;
 pub use http::{Bind, Protocols};
+pub use options::GufiOptions;
 pub use python::{Error, Result, Runner};
 #[cfg(feature = "axum")]
 pub use routing::register;
 pub use routing::{
     AppRequest, AppResponse, PeerAddrs, PythonService, RequestScheme, register_with
 };
+pub use trust::Trust;
