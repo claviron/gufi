@@ -106,14 +106,14 @@ impl Runnable<AppState> for FleetIngress {
             .raw();
 
         let segment = Arc::new(
-            TransportSegment::host().map_err(|error| registry::Error::msg(error.to_string()))?
+            TransportSegment::shared().map_err(|error| registry::Error::msg(error.to_string()))?
         );
         let lane = segment
             .inbox()
             .join(&self.application, incarnation)
             .map_err(|error| registry::Error::msg(error.to_string()))?;
         let bodies = Arc::new(
-            TransportBodies::host(lane, incarnation)
+            TransportBodies::shared(lane, incarnation)
                 .map_err(|error| registry::Error::msg(error.to_string()))?
         );
 
