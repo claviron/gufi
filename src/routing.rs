@@ -263,9 +263,9 @@ where
     B: http_body::Body<Data = Bytes> + Send + 'static,
     B::Error: std::fmt::Display
 {
+    type Response = AppResponse;
     type Error = Infallible;
     type Future = BoxFuture<Result<AppResponse, Infallible>>;
-    type Response = AppResponse;
 
     fn poll_ready(
         &mut self,
@@ -326,12 +326,10 @@ where
     };
 
     match tokio::task::spawn_blocking(move || handle.handle_http(scope)).await {
-        Ok(Ok(response)) => {
-            match response_from_asgi(response.status, response.headers, response.body) {
-                Ok(response) => response,
-                Err(message) => text_response(StatusCode::INTERNAL_SERVER_ERROR, message.to_owned())
-            }
-        }
+        Ok(Ok(response)) => response_from_asgi(response.status, response.headers, response.body)
+            .unwrap_or_else(|message| {
+                text_response(StatusCode::INTERNAL_SERVER_ERROR, message.to_owned())
+            }),
         Ok(Err(error)) => text_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         Err(error) => text_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
     }
