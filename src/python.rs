@@ -41,7 +41,9 @@ pub struct Runner {
     orbit: bool,
     binds: Vec<Bind>,
     protocols: Protocols,
-    trusted: Vec<Network>
+    trusted: Vec<Network>,
+    #[cfg(feature = "tls")]
+    tls: Option<crate::Tls>
 }
 
 impl Runner {
@@ -55,7 +57,9 @@ impl Runner {
             orbit: false,
             binds: Vec::new(),
             protocols: Protocols::default(),
-            trusted: Vec::new()
+            trusted: Vec::new(),
+            #[cfg(feature = "tls")]
+            tls: None
         }
     }
 
@@ -162,6 +166,18 @@ impl Runner {
         self
     }
 
+    /// Serve HTTPS on the TCP doors.
+    ///
+    /// A Unix socket is left alone: its boundary is already the filesystem's.
+    #[cfg(feature = "tls")]
+    pub fn tls(
+        mut self,
+        tls: crate::Tls
+    ) -> Self {
+        self.tls = Some(tls);
+        self
+    }
+
     /// Which HTTP versions the sockets accept. Both, unless told otherwise.
     pub fn protocols(
         mut self,
@@ -189,6 +205,12 @@ impl Runner {
             h1,
             h2,
             trusted,
+            #[cfg(feature = "tls")]
+            tls_cert,
+            #[cfg(feature = "tls")]
+            tls_key,
+            #[cfg(feature = "tls")]
+            tls_client_ca,
             root,
             venv
         } = options;
@@ -211,6 +233,14 @@ impl Runner {
             self.protocols = Protocols::resolve(h1, h2);
         }
         self.trusted.extend(trusted);
+        #[cfg(feature = "tls")]
+        if let (Some(certificate), Some(key)) = (tls_cert, tls_key) {
+            let mut tls = crate::Tls::new(certificate, key);
+            if let Some(authority) = tls_client_ca {
+                tls = tls.client_ca(authority);
+            }
+            self.tls = Some(tls);
+        }
         if let Some(root) = root {
             self.application_root = Some(root);
         }
@@ -254,6 +284,8 @@ impl Runner {
         let target = self.target;
         let protocols = self.protocols;
         let trusted = self.trusted;
+        #[cfg(feature = "tls")]
+        let tls = self.tls;
         let orbit = self.orbit;
         // A process with no door would boot an interpreter nothing can reach.
         // The first thing a Python developer runs has no arguments, so that
@@ -307,7 +339,12 @@ impl Runner {
                     state.registry_ref().insert(Arc::new(Trust::new(trusted)))?;
                 }
                 if !binds.is_empty() {
-                    state.registry_ref().insert(Arc::new(HttpIngress::new(binds, protocols)))?;
+                    state.registry_ref().insert(Arc::new(HttpIngress::new(
+                        binds,
+                        protocols,
+                        #[cfg(feature = "tls")]
+                        tls
+                    )))?;
                 }
                 Ok(())
             })

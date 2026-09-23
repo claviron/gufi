@@ -13,6 +13,8 @@ mod options;
 mod orbit;
 mod python;
 pub mod routing;
+#[cfg(feature = "tls")]
+pub mod tls;
 pub mod trust;
 
 /// The axum `register` builds against — Claviron's, re-exported so an
@@ -28,4 +30,6 @@ pub use routing::register;
 pub use routing::{
     AppRequest, AppResponse, PeerAddrs, PythonService, RequestScheme, register_with
 };
+#[cfg(feature = "tls")]
+pub use tls::Tls;
 pub use trust::Trust;

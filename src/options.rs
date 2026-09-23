@@ -108,6 +108,21 @@ pub struct GufiOptions {
     #[cfg_attr(feature = "cli", arg(long = "trusted"))]
     pub trusted: Vec<crate::trust::Network>,
 
+    /// Serve HTTPS on the TCP door with this certificate chain.
+    #[cfg(feature = "tls")]
+    #[cfg_attr(feature = "cli", arg(long, requires = "tls_key"))]
+    pub tls_cert: Option<PathBuf>,
+
+    /// The private key for `--tls-cert`.
+    #[cfg(feature = "tls")]
+    #[cfg_attr(feature = "cli", arg(long, requires = "tls_cert"))]
+    pub tls_key: Option<PathBuf>,
+
+    /// Require a client certificate signed by this authority.
+    #[cfg(feature = "tls")]
+    #[cfg_attr(feature = "cli", arg(long, requires = "tls_cert"))]
+    pub tls_client_ca: Option<PathBuf>,
+
     /// The application root. Defaults to the working directory.
     #[cfg_attr(feature = "cli", arg(long))]
     pub root: Option<PathBuf>,

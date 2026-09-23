@@ -65,8 +65,12 @@ pub enum Bind {
 }
 
 impl Bind {
-    fn describe(&self) -> String {
+    fn describe(
+        &self,
+        secure: bool
+    ) -> String {
         match self {
+            Self::Tcp(address) if secure => format!("https://{address}"),
             Self::Tcp(address) => format!("http://{address}"),
             Self::Uds(path) => format!("unix:{}", path.display())
         }
@@ -124,7 +128,9 @@ pub(crate) struct Server {
     listener: Listener,
     bind: Bind,
     protocols: Protocols,
-    trust: Arc<Trust>
+    trust: Arc<Trust>,
+    #[cfg(feature = "tls")]
+    acceptor: Option<tokio_rustls::TlsAcceptor>
 }
 
 impl Server {
@@ -139,11 +145,31 @@ impl Server {
             (Listener::Tcp(listener), _) => Bind::Tcp(listener.local_addr()?),
             (_, other) => other
         };
-        Ok(Self { listener, bind, protocols, trust })
+        Ok(Self {
+            listener,
+            bind,
+            protocols,
+            trust,
+            #[cfg(feature = "tls")]
+            acceptor: None
+        })
     }
 
     pub(crate) fn bound(&self) -> &Bind {
         &self.bind
+    }
+
+    /// Wrap accepted TCP connections in TLS. A Unix socket ignores it: its
+    /// boundary is the filesystem's already.
+    #[cfg(feature = "tls")]
+    pub(crate) fn with_tls(
+        mut self,
+        acceptor: Option<tokio_rustls::TlsAcceptor>
+    ) -> Self {
+        if matches!(self.bind, Bind::Tcp(_)) {
+            self.acceptor = acceptor;
+        }
+        self
     }
 
     pub(crate) async fn serve<H, HF, S>(
@@ -172,8 +198,22 @@ impl Server {
                     let handler = handler.clone();
                     let protocols = self.protocols;
                     let trust = Arc::clone(&self.trust);
+                    #[cfg(feature = "tls")]
+                    let acceptor = self.acceptor.clone();
                     connections.spawn(async move {
                         match stream {
+                            #[cfg(feature = "tls")]
+                            Accepted::Tcp(stream) if acceptor.is_some() => {
+                                let stream = acceptor
+                                    .expect("acceptor")
+                                    .accept(stream)
+                                    .await
+                                    .map_err(Error::Io)?;
+                                serve_secure_connection(
+                                    stream, peer, local, protocols, trust, handler
+                                )
+                                .await
+                            }
                             Accepted::Tcp(stream) => {
                                 serve_connection(stream, peer, local, protocols, trust, handler)
                                     .await
@@ -186,8 +226,12 @@ impl Server {
                     });
                 }
                 completed = connections.join_next(), if !connections.is_empty() => {
-                    if let Some(result) = completed {
-                        result??;
+                    // A connection's failure is a connection's failure. A
+                    // refused handshake, a client that vanished mid-request, a
+                    // protocol error — none of them is a reason for the door
+                    // to close on everyone else.
+                    if let Some(Ok(Err(error))) = completed {
+                        tracing::debug!("connection ended: {error}");
                     }
                 }
             }
@@ -195,8 +239,8 @@ impl Server {
 
         connections.abort_all();
         while let Some(result) = connections.join_next().await {
-            if !result.as_ref().is_err_and(tokio::task::JoinError::is_cancelled) {
-                result??;
+            if let Ok(Err(error)) = result {
+                tracing::debug!("connection ended during shutdown: {error}");
             }
         }
         if let Bind::Uds(path) = &self.bind {
@@ -224,6 +268,24 @@ async fn accept(listener: &Listener) -> Result<(Accepted, Option<SocketAddr>)> {
     })
 }
 
+/// The same connection, with the scheme the handshake established.
+#[cfg(feature = "tls")]
+async fn serve_secure_connection<I, H, HF>(
+    stream: I,
+    peer: Option<SocketAddr>,
+    server: Option<SocketAddr>,
+    protocols: Protocols,
+    trust: Arc<Trust>,
+    handler: H
+) -> Result<()>
+where
+    I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    H: Fn(AppRequest) -> HF + Clone + Send + Sync + 'static,
+    HF: Future<Output = AppResponse> + Send + 'static
+{
+    serve_with_scheme(stream, peer, server, protocols, trust, "https", handler).await
+}
+
 async fn serve_connection<I, H, HF>(
     stream: I,
     peer: Option<SocketAddr>,
@@ -237,8 +299,25 @@ where
     H: Fn(AppRequest) -> HF + Clone + Send + Sync + 'static,
     HF: Future<Output = AppResponse> + Send + 'static
 {
+    serve_with_scheme(stream, peer, server, protocols, trust, "http", handler).await
+}
+
+async fn serve_with_scheme<I, H, HF>(
+    stream: I,
+    peer: Option<SocketAddr>,
+    server: Option<SocketAddr>,
+    protocols: Protocols,
+    trust: Arc<Trust>,
+    scheme: &'static str,
+    handler: H
+) -> Result<()>
+where
+    I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    H: Fn(AppRequest) -> HF + Clone + Send + Sync + 'static,
+    HF: Future<Output = AppResponse> + Send + 'static
+{
     let service = service_fn(move |request| {
-        handle_request(request, peer, server, Arc::clone(&trust), handler.clone())
+        handle_request(request, peer, server, Arc::clone(&trust), scheme, handler.clone())
     });
     let io = TokioIo::new(stream);
     match (protocols.h1, protocols.h2) {
@@ -265,6 +344,7 @@ async fn handle_request<H, HF>(
     peer: Option<SocketAddr>,
     server: Option<SocketAddr>,
     trust: Arc<Trust>,
+    scheme: &'static str,
     handler: H
 ) -> std::result::Result<AppResponse, Infallible>
 where
@@ -306,7 +386,7 @@ where
     }
     request
         .extensions_mut()
-        .insert(RequestScheme(resolved.scheme.unwrap_or_else(|| "http".to_owned())));
+        .insert(RequestScheme(resolved.scheme.unwrap_or_else(|| scheme.to_owned())));
 
     Ok(handler(request).await)
 }
@@ -334,15 +414,23 @@ fn error_response(
 /// and differ only in where they accept.
 pub(crate) struct HttpIngress {
     binds: Vec<Bind>,
-    protocols: Protocols
+    protocols: Protocols,
+    #[cfg(feature = "tls")]
+    tls: Option<crate::Tls>
 }
 
 impl HttpIngress {
     pub(crate) fn new(
         binds: Vec<Bind>,
-        protocols: Protocols
+        protocols: Protocols,
+        #[cfg(feature = "tls")] tls: Option<crate::Tls>
     ) -> Self {
-        Self { binds, protocols }
+        Self {
+            binds,
+            protocols,
+            #[cfg(feature = "tls")]
+            tls
+        }
     }
 }
 
@@ -387,6 +475,15 @@ impl Runnable<AppState> for HttpIngress {
         // application put something better there first.
         let trust = state.registry_ref().resolve::<Trust>().unwrap_or_default();
 
+        // Read the certificate before any door opens: a bad path or a key
+        // that does not match its certificate is a boot failure, not a
+        // handshake that fails once traffic arrives.
+        #[cfg(feature = "tls")]
+        let acceptor = match &self.tls {
+            None => None,
+            Some(tls) => Some(tls.acceptor().map_err(registry::Error::msg)?)
+        };
+
         let mut listeners = JoinSet::new();
         for bind in &self.binds {
             let server = Server::bind(bind.clone(), self.protocols, Arc::clone(&trust))
@@ -394,15 +491,23 @@ impl Runnable<AppState> for HttpIngress {
                 .map_err(|error| registry::Error::msg(error.to_string()))?;
             // Info on purpose, unlike the rest of this crate: an address is
             // the thing an operator looks for.
+            #[cfg(feature = "tls")]
+            let secure = acceptor.is_some() && matches!(bind, Bind::Tcp(_));
+            #[cfg(not(feature = "tls"))]
+            let secure = false;
             tracing::info!(
                 trusted = if trust.is_empty() { "nobody" } else { "registered peers" },
                 "🐍 gufi listening on {}",
-                server.bound().describe()
+                server.bound().describe(secure)
             );
 
             let application = Arc::clone(&application);
             let cancelled = context.clone();
+            #[cfg(feature = "tls")]
+            let acceptor = acceptor.clone();
             listeners.spawn(async move {
+                #[cfg(feature = "tls")]
+                let server = server.with_tls(acceptor);
                 server
                     .serve(
                         move |request| {
