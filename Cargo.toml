@@ -1,0 +1,15 @@
+[package]
+name = "gufi"
+version = "0.0.0"
+edition = "2024"
+authors = ["Claviron <code@claviron.org>"]
+description = "Python runner for Claviron — name reserved, not yet released"
+repository = "https://github.com/claviron/gufi"
+license = "MIT"
+keywords = ["python", "asgi", "runtime", "claviron"]
+categories = ["web-programming::http-server"]
+
+# Placeholder: this version exists to hold the name. The runner itself is
+# released once it stops depending on Claviron by path.
+[dependencies]
+claviron = "0.1.0"

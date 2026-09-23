@@ -1,0 +1,44 @@
+# --- Rust / Cargo ---
+/target/
+/target-native/
+
+# --- Secrets & local config ---
+.env
+.env.*
+!.env.example
+*.env
+*.key
+*.pem
+*.pfx
+*.p12
+*.local
+/*.local
+
+# --- Editor / IDE ---
+/.idea/
+/.vscode/*
+!/.vscode/settings.json
+!/.vscode/tasks.json
+!/.vscode/launch.json
+!/.vscode/extensions.json
+!/.vscode/*.code-snippets
+/.nvimlog
+/.venv/
+.history/
+.vs/
+*.swp
+*.swo
+*.swn
+*~
+
+# --- OS junk ---
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# --- Misc local ---
+*.bak
+*.orig
+*.rej
+core.*
