@@ -253,7 +253,7 @@ impl Runner {
         let instance_name = self.instance_name.unwrap_or_else(|| application_name.clone());
         let target = self.target;
         let protocols = self.protocols;
-        let trust = Arc::new(Trust::new(self.trusted));
+        let trusted = self.trusted;
         let orbit = self.orbit;
         // A process with no door would boot an interpreter nothing can reach.
         // The first thing a Python developer runs has no arguments, so that
@@ -300,12 +300,14 @@ impl Runner {
                     // the one name the edge knows.
                     state.registry_ref().insert(Arc::new(OrbitIngress::new(application_name)))?;
                 }
+                // The launch's answer, unless `configure` already registered a
+                // better one. Same rule as the application service: state what
+                // is missing, never overwrite what was stated.
+                if state.registry_ref().resolve::<Trust>().is_none() {
+                    state.registry_ref().insert(Arc::new(Trust::new(trusted)))?;
+                }
                 if !binds.is_empty() {
-                    state.registry_ref().insert(Arc::new(HttpIngress::new(
-                        binds,
-                        protocols,
-                        Arc::clone(&trust)
-                    )))?;
+                    state.registry_ref().insert(Arc::new(HttpIngress::new(binds, protocols)))?;
                 }
                 Ok(())
             })

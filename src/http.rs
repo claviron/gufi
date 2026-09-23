@@ -281,7 +281,16 @@ where
     // the peer is one whose word this launch takes.
     let resolved = trust.resolve(peer, request.headers());
 
-    let (parts, body) = request.into_parts();
+    let (mut parts, body) = request.into_parts();
+    // A trusted proxy reported the host the client asked for; an application
+    // reads `Host`, and behind a proxy the socket's is the proxy's own. This
+    // is what trusting the proxy means, and it is why `ALLOWED_HOSTS` works
+    // behind one.
+    if let Some(host) = resolved.host.as_deref()
+        && let Ok(value) = http::HeaderValue::from_str(host)
+    {
+        parts.headers.insert(http::header::HOST, value);
+    }
     let body = match body.collect().await {
         Ok(body) => body.to_bytes(),
         Err(error) => return Ok(error_response(StatusCode::BAD_REQUEST, error.to_string()))
@@ -325,17 +334,15 @@ fn error_response(
 /// and differ only in where they accept.
 pub(crate) struct HttpIngress {
     binds: Vec<Bind>,
-    protocols: Protocols,
-    trust: Arc<Trust>
+    protocols: Protocols
 }
 
 impl HttpIngress {
     pub(crate) fn new(
         binds: Vec<Bind>,
-        protocols: Protocols,
-        trust: Arc<Trust>
+        protocols: Protocols
     ) -> Self {
-        Self { binds, protocols, trust }
+        Self { binds, protocols }
     }
 }
 
@@ -376,15 +383,19 @@ impl Runnable<AppState> for HttpIngress {
             .resolve::<Application>()
             .ok_or_else(|| registry::Error::msg("no application service is registered"))?;
 
+        // Whatever is registered, which is the launch's list unless the
+        // application put something better there first.
+        let trust = state.registry_ref().resolve::<Trust>().unwrap_or_default();
+
         let mut listeners = JoinSet::new();
         for bind in &self.binds {
-            let server = Server::bind(bind.clone(), self.protocols, Arc::clone(&self.trust))
+            let server = Server::bind(bind.clone(), self.protocols, Arc::clone(&trust))
                 .await
                 .map_err(|error| registry::Error::msg(error.to_string()))?;
             // Info on purpose, unlike the rest of this crate: an address is
             // the thing an operator looks for.
             tracing::info!(
-                trusted = if self.trust.is_empty() { "nobody" } else { "configured peers" },
+                trusted = if trust.is_empty() { "nobody" } else { "registered peers" },
                 "🐍 gufi listening on {}",
                 server.bound().describe()
             );
