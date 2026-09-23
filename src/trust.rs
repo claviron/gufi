@@ -1,31 +1,55 @@
-//! Whether to believe what the server in front says.
+//! Which proxy to believe.
 //!
-//! This is the one policy a policy-free listener cannot avoid. Behind a proxy
-//! the socket's peer is the proxy, and the real client is in a header — which
-//! anyone can write. Believing it always lets a client choose its own address;
-//! believing it never puts the proxy's address in every log and every rate
-//! limit. So the launch says whose word counts.
+//! Behind a reverse proxy the socket's peer is the proxy, and the client's
+//! real address, scheme and host arrive in headers — which anyone can send.
+//! [`Trust`] names the peers whose headers count. Nothing is believed unless
+//! you say so.
 //!
-//! Nothing is trusted by default. A Unix socket is the exception: reaching it
-//! at all requires the filesystem permission to open it, so the peer is
-//! already someone the operator let in.
+//! When the peer is trusted, all of these are read and applied to the request
+//! the application sees:
 //!
-//! ## Where the answer comes from
+//! | header | effect |
+//! |---|---|
+//! | `Forwarded` (RFC 7239) | client address, scheme and host; preferred when present |
+//! | `X-Forwarded-For` | client address |
+//! | `X-Forwarded-Proto` | `https` or `http` in the ASGI scope |
+//! | `X-Forwarded-Host` | replaces `Host`, so `ALLOWED_HOSTS` sees the real domain |
+//! | `X-Forwarded-Port` | the client's port, when its address is known too |
+//! | `X-Real-IP` | client address, when nothing richer was sent |
 //!
-//! From the registry, like everything else this runner resolves. The launch
-//! can put one there — `--trusted` is a convenience that does exactly that —
-//! and an application that wants more than a list of networks registers its
-//! own in `configure` before the runner would. Nothing here reads a
-//! configuration file: this crate has no configuration format and is not
-//! going to grow one, because every policy that needed a flag would need a
-//! parser and a document beside it.
+//! A Unix socket is always trusted: opening it already required the
+//! filesystem permission you granted.
 //!
-//! ## Why this does not exist on the Orbit path
+//! # Examples
 //!
-//! There the edge writes `client` and `scheme` as typed fields of the
-//! exchange, and the only writer is a process in the fleet. The header dance
-//! exists because HTTP has no way to say "this is the real client" that a
-//! client cannot also say.
+//! From the launch:
+//!
+//! ```text
+//! $ checkout --uds /run/checkout.sock --trusted 10.0.0.0/8
+//! ```
+//!
+//! Or in `configure`, when the list comes from somewhere of your own:
+//!
+//! ```no_run
+//! use std::sync::Arc;
+//!
+//! use claviron::runtime::{AppState, registry};
+//! use gufi::Trust;
+//!
+//! pub fn configure(state: &AppState) -> registry::Result<()> {
+//!     state.registry_ref().insert(Arc::new(Trust::new(vec![
+//!         "10.0.0.0/8".parse().expect("network"),
+//!         "::1".parse().expect("address"),
+//!     ])))?;
+//!     Ok(())
+//! }
+//! ```
+//!
+//! A `Trust` registered in `configure` replaces whatever the launch asked
+//! for.
+//!
+//! An untrusted peer's forwarding headers are ignored completely — the
+//! connection's own address and scheme are reported instead.
 
 use std::net::{IpAddr, SocketAddr};
 
@@ -40,7 +64,9 @@ const X_FORWARDED_HOST: HeaderName = HeaderName::from_static("x-forwarded-host")
 const X_FORWARDED_PORT: HeaderName = HeaderName::from_static("x-forwarded-port");
 const X_REAL_IP: HeaderName = HeaderName::from_static("x-real-ip");
 
-/// Whose forwarding headers this process believes.
+/// The peers whose forwarding headers this process believes.
+///
+/// See the [module documentation](self) for what is read and applied.
 #[derive(Clone, Debug, Default)]
 pub struct Trust {
     /// Peers whose word is taken, as addresses or CIDR prefixes.
@@ -63,21 +89,11 @@ impl Trust {
         self.networks.iter().any(|network| network.contains(address))
     }
 
-    /// What the connection and its headers together say, given who connected.
+    /// Resolve the client, scheme and host for one request.
     ///
-    /// `peer` is `None` for a Unix socket, which is trusted by construction.
-    /// An untrusted peer's headers are ignored entirely — not partly, and not
-    /// with a warning that nobody reads.
-    ///
-    /// Every header a proxy is known to send is read, not just the address:
-    /// a scheme the application needs for secure cookies and redirects, and a
-    /// host it needs for URL generation and for `ALLOWED_HOSTS`. Reading the
-    /// address and dropping the host is how an application behind a proxy
-    /// starts answering 400 to its own domain.
-    ///
-    /// `Forwarded` (RFC 7239) wins over the `X-Forwarded-*` family when both
-    /// are present: it is the standard one, and a proxy that sends it is
-    /// saying so deliberately.
+    /// `peer` is the connection's address, or `None` for a Unix socket. When
+    /// the peer is not trusted the headers are ignored and the connection's
+    /// own answer is returned.
     pub fn resolve(
         &self,
         peer: Option<SocketAddr>,
@@ -250,7 +266,10 @@ fn split_node(raw: &str) -> (Option<IpAddr>, Option<u16>) {
     }
 }
 
-/// One trusted peer, or a prefix of them.
+/// One trusted peer, or a network of them.
+///
+/// Parsed from `10.0.0.1`, `10.0.0.0/8`, `::1` or `fd00::/8`; a bare address
+/// means that address alone.
 #[derive(Clone, Copy, Debug)]
 pub struct Network {
     address: IpAddr,
@@ -314,8 +333,6 @@ impl std::str::FromStr for Network {
     }
 }
 
-/// Resolved from the registry by the listener; registered by the launch, or
-/// by the application before it.
 impl Provider<AppState> for Trust {
     fn name(&self) -> &'static str {
         "Trust"

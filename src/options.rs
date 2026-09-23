@@ -1,38 +1,65 @@
-//! Everything a launch can decide, as one struct.
+//! Options for a launch.
 //!
-//! A struct rather than a trait: the runner then has exactly one type to read,
-//! and an application fills it however it likes — from the command line, from
-//! its own configuration, from environment variables, or by hand. The `cli`
-//! feature does not change that; it only adds one more way to fill it.
+//! [`GufiOptions`] holds what a deployment decides: the application's name,
+//! which doors it answers on, and whose forwarding headers it believes. The
+//! application's own code — routes, providers, services — is unaffected by
+//! any of it.
 //!
-//! ## Who reads the command line
+//! Fill it from the command line, from your own configuration, or by hand.
 //!
-//! The binary does, not this crate. `Runner::run` never looks at `argv`:
-//! a library that did could not be used twice in one process, would read
-//! `cargo test`'s own arguments in an integration test, and would hide the
-//! decision from the code that made it. So [`GufiOptions::from_args`] exists
-//! and is called explicitly — one visible line in the application's `main`,
-//! which the starter kit ships already written:
+//! # Examples
 //!
-//! ```ignore
-//! Runner::new("main:app")
-//!     .with_options(GufiOptions::from_args())
-//!     .run(app::configure)
-//!     .await
+//! From the command line. `--help` is generated from the fields:
+//!
+//! ```no_run
+//! use gufi::{GufiOptions, Runner};
+//!
+//! #[tokio::main]
+//! async fn main() -> gufi::Result<()> {
+//!     Runner::new("main:app")
+//!         .with_options(GufiOptions::from_args())
+//!         .run(app::configure)
+//!         .await
+//! }
+//! # mod app {
+//! #     use claviron::runtime::{AppState, registry};
+//! #     pub fn configure(_: &AppState) -> registry::Result<()> { Ok(()) }
+//! # }
 //! ```
 //!
-//! Delete that line and the application decides for itself; nothing else
-//! changes.
+//! ```text
+//! $ checkout --application-name checkout --uds /run/checkout.sock --trusted 10.0.0.0/8
+//! $ checkout --orbit                       # reached over shared memory
+//! $ checkout --tcp 0.0.0.0:8000 --h1       # HTTP/1 only
+//! ```
+//!
+//! Or set them in code, when the deployment is fixed or comes from elsewhere:
+//!
+//! ```no_run
+//! use gufi::{GufiOptions, Runner};
+//!
+//! let options = GufiOptions {
+//!     application_name: Some("checkout".to_owned()),
+//!     orbit: true,
+//!     ..Default::default()
+//! };
+//!
+//! let runner = Runner::new("main:app").with_options(options);
+//! ```
+//!
+//! A field left unset keeps the runner's default: the working directory's
+//! name, `.venv` beneath it, and a listener on `127.0.0.1:8000` when no door
+//! is named. Builder methods called after [`Runner::with_options`] take
+//! precedence, so a deployment can accept the command line and still pin one
+//! value itself.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-/// What a launch decided, in the shape the runner reads.
+/// Options for a launch.
 ///
-/// Every field is optional in the sense that `None` leaves the runner's own
-/// default in place — the working directory's name, `.venv` beneath it, the
-/// development listener. A launch states what it cares about and nothing
-/// else.
+/// Every field is optional; an unset field keeps the runner's default. See
+/// the [module documentation](self) for examples.
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "cli", derive(clap::Parser))]
 #[cfg_attr(
@@ -91,10 +118,12 @@ pub struct GufiOptions {
 }
 
 impl GufiOptions {
-    /// Read the command line.
+    /// Read these options from the command line.
     ///
-    /// Called by the application, never by the runner. `--help` and `--version`
-    /// come with it.
+    /// Call it from your `main`; the runner never reads `argv` itself.
+    /// `--help` and `--version` are generated from the fields.
+    ///
+    /// Requires the `cli` feature, which is on in the starter kit.
     #[cfg(feature = "cli")]
     pub fn from_args() -> Self {
         <Self as clap::Parser>::parse()
