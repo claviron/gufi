@@ -6,30 +6,8 @@ use claviron::Server;
 use claviron::runtime::{AppState, registry};
 
 use crate::application::PythonApplicationService;
-use crate::fleet::FleetIngress;
-use crate::http::DevIngress;
-
-/// Which door this process answers through.
-///
-/// One decision, taken when the process is started rather than written into
-/// the application: the same binary, the same `configure`, the same routes,
-/// reached two different ways. Nothing in the application sees this — a
-/// request arrives as a request either way.
-///
-/// This is not Claviron's `RunMode`, which says whether a process is a master,
-/// a worker or standalone. That is the process model; this is the door.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum RunMode {
-    /// A plain HTTP listener on this machine, for writing the application.
-    ///
-    /// The default, because it is the one that needs nothing else running.
-    #[default]
-    Dev,
-    /// No listener at all. The process joins the shared fleet under its
-    /// application name and waits on its lane, and a Claviron edge reaches it
-    /// there — over shared memory, with no socket between them.
-    Fleet
-}
+use crate::orbit::OrbitIngress;
+use crate::http::{Bind, HttpIngress, Protocols};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -59,8 +37,9 @@ pub struct Runner {
     instance_name: Option<String>,
     application_root: Option<PathBuf>,
     virtual_environment: Option<PathBuf>,
-    mode: RunMode,
-    address: SocketAddr
+    orbit: bool,
+    binds: Vec<Bind>,
+    protocols: Protocols
 }
 
 impl Runner {
@@ -71,8 +50,9 @@ impl Runner {
             instance_name: None,
             application_root: None,
             virtual_environment: None,
-            mode: RunMode::Dev,
-            address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000)
+            orbit: false,
+            binds: Vec::new(),
+            protocols: Protocols::default()
         }
     }
 
@@ -140,26 +120,86 @@ impl Runner {
         self
     }
 
-    /// Which door to answer through: a local listener, or the shared fleet.
+    /// Also answer through the shared fleet, reached over shared memory.
     ///
     /// There is no fleet name to go with it. The transport's is the same on
-    /// every process on the machine — an edge worker and an application find
-    /// each other because they opened the same segment — and this process's
-    /// own fleet is named after the application, which is a name the runner
-    /// already has. Neither is a question for the application to answer.
-    pub fn mode(
+    /// every process on the machine, and this process's own is taken from its
+    /// instance name. Neither is a question for the application.
+    pub fn orbit(
         mut self,
-        mode: RunMode
+        orbit: bool
     ) -> Self {
-        self.mode = mode;
+        self.orbit = orbit;
         self
     }
 
-    pub fn address(
+    /// Also answer on a socket.
+    ///
+    /// Doors are capabilities, not alternatives: a process may hold a lane in
+    /// the fleet and a Unix socket at the same time, which is what a migration
+    /// off an old front server looks like. Every one of them ends at the same
+    /// application.
+    pub fn listen(
         mut self,
-        address: SocketAddr
+        bind: Bind
     ) -> Self {
-        self.address = address;
+        self.binds.push(bind);
+        self
+    }
+
+    /// Which HTTP versions the sockets accept. Both, unless told otherwise.
+    pub fn protocols(
+        mut self,
+        protocols: Protocols
+    ) -> Self {
+        self.protocols = protocols;
+        self
+    }
+
+    /// Take what a launch decided.
+    ///
+    /// Each field that is set replaces the runner's; each that is not leaves
+    /// it alone. Builder calls made after this one win, so an application can
+    /// accept the command line and still pin something itself.
+    pub fn with_options(
+        mut self,
+        options: crate::GufiOptions
+    ) -> Self {
+        let crate::GufiOptions {
+            application_name,
+            instance_name,
+            orbit,
+            tcp,
+            uds,
+            h1,
+            h2,
+            root,
+            venv
+        } = options;
+        if let Some(name) = application_name {
+            self.application_name = Some(name);
+        }
+        if let Some(name) = instance_name {
+            self.instance_name = Some(name);
+        }
+        if orbit {
+            self.orbit = true;
+        }
+        if let Some(address) = tcp {
+            self.binds.push(Bind::Tcp(address));
+        }
+        if let Some(path) = uds {
+            self.binds.push(Bind::Uds(path));
+        }
+        if h1 || h2 {
+            self.protocols = Protocols::resolve(h1, h2);
+        }
+        if let Some(root) = root {
+            self.application_root = Some(root);
+        }
+        if let Some(venv) = venv {
+            self.virtual_environment = Some(venv);
+        }
         self
     }
 
@@ -195,8 +235,16 @@ impl Runner {
             self.virtual_environment.unwrap_or_else(|| application_root.join(".venv"));
         let instance_name = self.instance_name.unwrap_or_else(|| application_name.clone());
         let target = self.target;
-        let address = self.address;
-        let mode = self.mode;
+        let protocols = self.protocols;
+        let orbit = self.orbit;
+        // A process with no door would boot an interpreter nothing can reach.
+        // The first thing a Python developer runs has no arguments, so that
+        // case is a local listener rather than an error.
+        let binds = if self.binds.is_empty() && !orbit {
+            vec![Bind::Tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000))]
+        } else {
+            self.binds
+        };
 
         Server::new()
             // The instance, not the application: the lock is held under this
@@ -226,20 +274,16 @@ impl Runner {
                 configure(state)?;
                 crate::routing::ensure_application(state)?;
 
-                // One door, chosen once. Registering both would put two
-                // ingresses on one interpreter, and the second would be a
-                // surprise to whoever started the first.
-                match mode {
-                    RunMode::Dev => {
-                        state.registry_ref().insert(Arc::new(DevIngress::new(address)))?;
-                    }
-                    RunMode::Fleet => {
-                        // The lane advertises what this process *serves*,
-                        // which is the one name the edge knows.
-                        state
-                            .registry_ref()
-                            .insert(Arc::new(FleetIngress::new(application_name)))?;
-                    }
+                // Every door that was asked for, and they do not exclude each
+                // other: each is a runnable of its own, and all of them end at
+                // the same application.
+                if orbit {
+                    // The lane advertises what this process *serves*, which is
+                    // the one name the edge knows.
+                    state.registry_ref().insert(Arc::new(OrbitIngress::new(application_name)))?;
+                }
+                for bind in binds {
+                    state.registry_ref().insert(Arc::new(HttpIngress::new(bind, protocols)))?;
                 }
                 Ok(())
             })

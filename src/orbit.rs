@@ -46,19 +46,19 @@ use tokio::task::JoinSet;
 use crate::routing::{Application, PeerAddrs, RequestScheme};
 
 /// This process's place in the shared fleet, as a runnable Claviron owns.
-pub(crate) struct FleetIngress {
+pub(crate) struct OrbitIngress {
     application: String
 }
 
-impl FleetIngress {
+impl OrbitIngress {
     pub(crate) fn new(application: impl Into<String>) -> Self {
         Self { application: application.into() }
     }
 }
 
-impl Provider<AppState> for FleetIngress {
+impl Provider<AppState> for OrbitIngress {
     fn name(&self) -> &'static str {
-        "FleetIngress"
+        "OrbitIngress"
     }
 
     fn as_runnable(self: Arc<Self>) -> Option<Arc<dyn Runnable<AppState>>> {
@@ -67,7 +67,7 @@ impl Provider<AppState> for FleetIngress {
 }
 
 #[async_trait]
-impl Runnable<AppState> for FleetIngress {
+impl Runnable<AppState> for OrbitIngress {
     /// A master serves no traffic and takes no lane. Its workers each take
     /// their own, so an edge sees as many targets as there are interpreters.
     fn start_policy(
