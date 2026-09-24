@@ -31,8 +31,8 @@ use std::time::Instant;
 use async_trait::async_trait;
 use bytes::Bytes;
 use claviron::orbit::transport::{
-    Exchange, ExchangeReply, FrameKind, TRANSPORT_INBOX_CAPACITY, TransportBodies,
-    TransportSegment, frame_kind, parking_supported
+    Exchange, ExchangeReply, FrameKind, TransportBodies, TransportSegment, frame_kind,
+    parking_supported
 };
 use claviron::runtime::{
     AppState, FleetIncarnation, Provider, RunContext, Runnable, ServiceStartPolicy, registry
@@ -44,6 +44,21 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
 use crate::routing::{Application, PeerAddrs, RequestScheme};
+
+/// Frames the reader thread may hand over before it has to wait.
+///
+/// A handoff, not a queue. The loop below spawns each frame on receipt, so
+/// this only has to cover the gap between the reader delivering one and the
+/// loop coming back round — a depth of a few is already generous, and
+/// sixteen is chosen to be uninteresting rather than tuned.
+///
+/// Deliberately small, and deliberately *not* the lane's depth, which it used
+/// to borrow. They answer opposite questions. The lane is where work waits
+/// where the edge can see it: an edge reads a target's depth and picks the
+/// idlest, so a backlog buffered inside this process is a backlog the edge is
+/// choosing blind against. Work should queue in the lane, in the open, not
+/// here.
+const DISPATCH_HANDOFF: usize = 16;
 
 /// This process's place in the shared fleet, as a runnable Claviron owns.
 pub(crate) struct OrbitIngress {
@@ -123,7 +138,7 @@ impl Runnable<AppState> for OrbitIngress {
         // see this process.
         tracing::info!("🛰 gufi serving '{}' on lane {lane} of the shared fleet", self.application);
 
-        let (frames, mut arrived) = mpsc::channel::<Vec<u8>>(TRANSPORT_INBOX_CAPACITY);
+        let (frames, mut arrived) = mpsc::channel::<Vec<u8>>(DISPATCH_HANDOFF);
         let stop = Arc::new(AtomicBool::new(false));
         let reader = spawn_reader(Arc::clone(&segment), lane, Arc::clone(&stop), frames)?;
 
