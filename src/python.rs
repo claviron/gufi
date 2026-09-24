@@ -412,23 +412,14 @@ impl Runner {
                         |source| source
                     )?;
 
-                state.registry_ref().insert(Arc::new(PythonApplicationService::new(
-                    target,
-                    application_root,
-                    virtual_environment
-                )))?;
-
-                // Then the application's own registrations, which may compose
-                // the interpreter behind their routes.
-                configure(state)?;
-                crate::routing::ensure_application(state)?;
-
                 // A worker was started with no command line: whatever this
                 // process's `main` parsed, it parsed nothing. What it serves
                 // is what its master resolved, and that arrived in the
-                // bootstrap envelope. Reading it here rather than earlier is
-                // deliberate — this is the first point at which the registry
-                // holds it.
+                // bootstrap envelope. It is read first, before anything is
+                // registered from it — the interpreter's own root and virtual
+                // environment are in there too, and a worker that fell back
+                // to its working directory for those would look for `.venv`
+                // wherever the master happened to be started from.
                 //
                 // Asked of the run mode rather than of the registry, because
                 // the process that wrote the envelope also holds it: the
@@ -449,25 +440,45 @@ impl Runner {
                     None
                 };
 
-                let (orbit, binds, protocols, trusted, application_name) = match inherited {
-                    None => (orbit, binds, protocols, trusted, application_name),
-                    Some(options) => {
-                        let mut doors = Vec::new();
-                        if let Some(address) = options.tcp {
-                            doors.push(Bind::Tcp(address));
+                let (orbit, binds, protocols, trusted, application_name, root, venv) =
+                    match inherited {
+                        None => (
+                            orbit,
+                            binds,
+                            protocols,
+                            trusted,
+                            application_name,
+                            application_root,
+                            virtual_environment
+                        ),
+                        Some(options) => {
+                            let mut doors = Vec::new();
+                            if let Some(address) = options.tcp {
+                                doors.push(Bind::Tcp(address));
+                            }
+                            if let Some(path) = options.uds.clone() {
+                                doors.push(Bind::Uds(path));
+                            }
+                            (
+                                options.orbit,
+                                doors,
+                                Protocols::resolve(options.h1, options.h2),
+                                options.trusted.clone(),
+                                options.name.clone().unwrap_or(application_name),
+                                options.root.clone().unwrap_or(application_root),
+                                options.venv.clone().unwrap_or(virtual_environment)
+                            )
                         }
-                        if let Some(path) = options.uds.clone() {
-                            doors.push(Bind::Uds(path));
-                        }
-                        (
-                            options.orbit,
-                            doors,
-                            Protocols::resolve(options.h1, options.h2),
-                            options.trusted.clone(),
-                            options.name.clone().unwrap_or(application_name)
-                        )
-                    }
-                };
+                    };
+
+                state
+                    .registry_ref()
+                    .insert(Arc::new(PythonApplicationService::new(target, root, venv)))?;
+
+                // Then the application's own registrations, which may compose
+                // the interpreter behind their routes.
+                configure(state)?;
+                crate::routing::ensure_application(state)?;
 
                 // Every door that was asked for, and they do not exclude each
                 // other: each is a runnable of its own, and all of them end at
