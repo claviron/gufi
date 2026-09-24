@@ -67,6 +67,23 @@
 //! are printable and unpatterned, so nothing along the way compresses them
 //! or optimises them away.
 //!
+//! # The other direction
+//!
+//! The route answers `POST` as well, reads whatever body arrives, and
+//! reports its size in an `x-received` header. That is the only way to
+//! exercise the request direction at all: every measurement until now has
+//! been a `GET`, so the half of the transport that carries a request body
+//! has never run under load.
+//!
+//! The header rather than the JSON so the reply stays the cached one — a
+//! body formatted per request would put the benchmark's own work into the
+//! number it reports.
+//!
+//! ```text
+//! curl -X POST --data-binary @4k.bin /_gufi/rust?payload=1024 -D-
+//! x-received: 4096
+//! ```
+//!
 //! Off by default, and it says so at boot when it is on: routes an
 //! application did not write should never be a surprise in a log.
 
@@ -74,11 +91,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use claviron::axum::Router;
+use claviron::axum::body::Bytes;
 use claviron::axum::extract::Query;
 use claviron::axum::response::IntoResponse;
 use claviron::axum::routing::get;
 use claviron::runtime::activity::ACTIVITY;
-use http::header::{CACHE_CONTROL, CONTENT_TYPE};
+use http::header::{CACHE_CONTROL, CONTENT_TYPE, HeaderName, HeaderValue};
 
 /// What the caller wants this route to do: how long to take, and how much
 /// to send back.
@@ -154,10 +172,18 @@ fn spread(bound: u64) -> u64 {
 
 /// The routes, for an application that composes its own router.
 pub fn routes() -> Router {
-    Router::new().route("/_gufi/rust", get(rust)).route("/_gufi/stats", get(stats))
+    Router::new().route("/_gufi/rust", get(rust).post(rust)).route("/_gufi/stats", get(stats))
 }
 
-async fn rust(Query(ask): Query<Ask>) -> claviron::axum::response::Response {
+async fn rust(
+    Query(ask): Query<Ask>,
+    received: Bytes
+) -> claviron::axum::response::Response {
+    // Read before waiting: the request body has to cross before there is
+    // anything to answer, and a benchmark that slept first would time the
+    // sleep instead of the crossing.
+    let received = received.len();
+
     if let Some(waited) = ask.duration() {
         tokio::time::sleep(waited).await;
     }
@@ -165,7 +191,18 @@ async fn rust(Query(ask): Query<Ask>) -> claviron::axum::response::Response {
         Some(bytes) => body(bytes),
         None => r#"{"from":"rust"}"#
     };
-    ([(CONTENT_TYPE, "application/json"), (CACHE_CONTROL, "no-store")], json).into_response()
+    // `HeaderValue::from` writes the number into its own inline buffer, so
+    // reporting the size costs no allocation. Formatting it would have cost
+    // one per request, which is the benchmark paying for its own instrument.
+    (
+        [
+            (CONTENT_TYPE, HeaderValue::from_static("application/json")),
+            (CACHE_CONTROL, HeaderValue::from_static("no-store")),
+            (HeaderName::from_static("x-received"), HeaderValue::from(received as u64))
+        ],
+        json
+    )
+        .into_response()
 }
 
 async fn stats() -> impl IntoResponse {
