@@ -43,6 +43,30 @@
 //! The duration is the caller's, not this process's: it is read from the
 //! request and never invented here.
 //!
+//! # Carrying something
+//!
+//! `payload` asks for a reply carrying a message of that many **characters**:
+//!
+//! ```text
+//! /_gufi/rust?payload=640      # {"from":"rust","message":"<640 chars>"}
+//! /_gufi/rust?payload=65536    # the same with 64 KiB of message
+//! ```
+//!
+//! Still JSON, because that is what an application returns. The body is the
+//! message plus its wrapper, so a few bytes more than asked for.
+//!
+//! A transport that moves bytes should be measured moving bytes. A reply of
+//! fifty-three says almost nothing about one: at that size an exchange is
+//! all setup, and the thing a shared-memory transport is supposed to save —
+//! the copy through a kernel buffer, the syscall per read and per write —
+//! has no room to appear. It is also where a shared ring can be shown to
+//! *lose*, if its window forces the writer to wait where a socket would not.
+//!
+//! The bytes are generated once for the process and sliced, never built per
+//! request: a benchmark must not spend the CPU it is trying to measure. They
+//! are printable and unpatterned, so nothing along the way compresses them
+//! or optimises them away.
+//!
 //! Off by default, and it says so at boot when it is on: routes an
 //! application did not write should never be a surprise in a log.
 
@@ -56,14 +80,16 @@ use claviron::axum::routing::get;
 use claviron::runtime::activity::ACTIVITY;
 use http::header::{CACHE_CONTROL, CONTENT_TYPE};
 
-/// How long the caller wants this route to take, in milliseconds.
+/// What the caller wants this route to do: how long to take, and how much
+/// to send back.
 #[derive(serde::Deserialize, Default)]
-pub struct Wait {
+pub struct Ask {
     min: Option<u64>,
-    max: Option<u64>
+    max: Option<u64>,
+    payload: Option<usize>
 }
 
-impl Wait {
+impl Ask {
     /// What to wait, or nothing when neither bound was given.
     fn duration(&self) -> Option<Duration> {
         let (low, high) = match (self.min, self.max) {
@@ -75,6 +101,41 @@ impl Wait {
         };
         Some(Duration::from_millis(if low == high { low } else { low + spread(high - low + 1) }))
     }
+}
+
+/// The longest message this route will send.
+///
+/// One mebibyte. A bound stated here is better than a request deciding how
+/// much memory the process holds.
+const PAYLOAD_MAX: usize = 1024 * 1024;
+
+/// The whole reply for a message of `bytes` characters, built once per size.
+///
+/// Built once and kept, rather than formatted per request: a benchmark must
+/// not spend the CPU it is trying to measure, and a `format!` of a megabyte
+/// on every request would be most of what the run reported. A process sees
+/// one or two sizes in its life, so the handful of strings this keeps are
+/// kept for good on purpose.
+fn body(bytes: usize) -> &'static str {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    static ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    static SOURCE: OnceLock<Vec<u8>> = OnceLock::new();
+    static BODIES: OnceLock<Mutex<HashMap<usize, &'static str>>> = OnceLock::new();
+
+    let bytes = bytes.min(PAYLOAD_MAX);
+    let mut bodies =
+        BODIES.get_or_init(Default::default).lock().expect("the body cache is never poisoned");
+    bodies.entry(bytes).or_insert_with(|| {
+        // Printable and unpatterned, so nothing compresses it or optimises
+        // it away. None of these characters needs escaping in JSON.
+        let source = SOURCE.get_or_init(|| {
+            (0..PAYLOAD_MAX).map(|_| ALPHABET[spread(ALPHABET.len() as u64) as usize]).collect()
+        });
+        let message = std::str::from_utf8(&source[..bytes]).expect("the alphabet is ASCII");
+        Box::leak(format!(r#"{{"from":"rust","message":"{message}"}}"#).into_boxed_str())
+    })
 }
 
 /// A number below `bound`, cheaply and without a dependency.
@@ -96,11 +157,15 @@ pub fn routes() -> Router {
     Router::new().route("/_gufi/rust", get(rust)).route("/_gufi/stats", get(stats))
 }
 
-async fn rust(Query(wait): Query<Wait>) -> impl IntoResponse {
-    if let Some(waited) = wait.duration() {
+async fn rust(Query(ask): Query<Ask>) -> claviron::axum::response::Response {
+    if let Some(waited) = ask.duration() {
         tokio::time::sleep(waited).await;
     }
-    ([(CONTENT_TYPE, "application/json"), (CACHE_CONTROL, "no-store")], r#"{"from":"rust"}"#)
+    let json = match ask.payload {
+        Some(bytes) => body(bytes),
+        None => r#"{"from":"rust"}"#
+    };
+    ([(CONTENT_TYPE, "application/json"), (CACHE_CONTROL, "no-store")], json).into_response()
 }
 
 async fn stats() -> impl IntoResponse {
