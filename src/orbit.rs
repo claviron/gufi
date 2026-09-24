@@ -31,8 +31,8 @@ use std::time::Instant;
 use async_trait::async_trait;
 use bytes::Bytes;
 use claviron::orbit::transport::{
-    Exchange, ExchangeReply, FrameKind, TransportBodies, TransportSegment, frame_kind,
-    parking_supported
+    Endpoint, Exchange, ExchangeReply, FrameKind, SHARED_FLEET_CAPACITY, StreamId,
+    TRANSPORT_LANE_CAPACITY, TransportBodies, TransportSegment, frame_kind, parking_supported
 };
 use claviron::runtime::{
     AppState, FleetIncarnation, Provider, RunContext, Runnable, ServiceStartPolicy, registry
@@ -59,6 +59,58 @@ use crate::routing::{Application, PeerAddrs, RequestScheme};
 /// choosing blind against. Work should queue in the lane, in the open, not
 /// here.
 const DISPATCH_HANDOFF: usize = 16;
+
+/// Streams this process holds open to the edge workers that reach it.
+///
+/// The edge keeps its slots between exchanges rather than building one each
+/// time, so the same ticket arrives again and the claim behind it is already
+/// ours — `accept` is a compare-and-swap and would refuse the second time.
+/// This is where the open end waits for the next exchange on that slot.
+///
+/// Bounded, because a held side keeps a slot alive. An edge that let its own
+/// half go leaves this one holding the table's seat, and a cache that only
+/// grew would hold every seat it ever saw. Dropping an endpoint here is what
+/// gives the seat back.
+///
+/// The bound is what the fleet can actually hand over rather than a number
+/// chosen to feel safe: every caller creates from its own table of
+/// [`TRANSPORT_LANE_CAPACITY`] slots, and there are at most
+/// [`SHARED_FLEET_CAPACITY`] callers, so nothing above their product can ever
+/// be offered. Evicting below it would throw away a slot an edge still holds
+/// and still intends to reuse, which costs both sides a claim.
+const HELD_MAX: usize = SHARED_FLEET_CAPACITY * TRANSPORT_LANE_CAPACITY;
+
+#[derive(Default)]
+struct Held {
+    open: std::collections::HashMap<StreamId, Endpoint>,
+    order: std::collections::VecDeque<StreamId>
+}
+
+impl Held {
+    fn take(
+        &mut self,
+        id: StreamId
+    ) -> Option<Endpoint> {
+        let endpoint = self.open.remove(&id)?;
+        self.order.retain(|held| *held != id);
+        Some(endpoint)
+    }
+
+    fn put(
+        &mut self,
+        endpoint: Endpoint
+    ) {
+        let id = endpoint.id();
+        if self.open.insert(id, endpoint).is_none() {
+            self.order.push_back(id);
+        }
+        while self.order.len() > HELD_MAX {
+            if let Some(oldest) = self.order.pop_front() {
+                self.open.remove(&oldest);
+            }
+        }
+    }
+}
 
 /// This process's place in the shared fleet, as a runnable Claviron owns.
 pub(crate) struct OrbitIngress {
@@ -142,6 +194,7 @@ impl Runnable<AppState> for OrbitIngress {
         let stop = Arc::new(AtomicBool::new(false));
         let reader = spawn_reader(Arc::clone(&segment), lane, Arc::clone(&stop), frames)?;
 
+        let held: Arc<std::sync::Mutex<Held>> = Arc::default();
         let mut exchanges = JoinSet::new();
         loop {
             tokio::select! {
@@ -154,7 +207,8 @@ impl Runnable<AppState> for OrbitIngress {
                             lane,
                             Arc::clone(&application),
                             Arc::clone(&segment),
-                            Arc::clone(&bodies)
+                            Arc::clone(&bodies),
+                            Arc::clone(&held)
                         ));
                     }
                     None => break
@@ -240,7 +294,8 @@ async fn serve(
     lane: usize,
     application: Arc<Application>,
     segment: Arc<TransportSegment>,
-    bodies: Arc<TransportBodies>
+    bodies: Arc<TransportBodies>,
+    held: Arc<std::sync::Mutex<Held>>
 ) {
     match frame_kind(&frame) {
         Ok(FrameKind::Request) => {}
@@ -278,20 +333,31 @@ async fn serve(
         exchange.path
     );
 
-    // The slot the edge created carries both bodies: the request arrives on
-    // one direction and the reply leaves on the other.
+    // The slot carries both bodies: the request arrives on one direction and
+    // the reply leaves on the other. It may be one this process already holds
+    // — the edge keeps its slots — so the open end is looked for before a
+    // claim is attempted.
     let body = match exchange.body {
-        Some(ticket) => match bodies.accept(ticket) {
-            Ok(endpoint) => Some(endpoint),
-            Err(error) => {
-                tracing::debug!("exchange {correlation} has no readable body: {error}");
-                return;
+        Some(ticket) => {
+            let open = held.lock().expect("the held mutex is never poisoned").take(ticket.id);
+            match open {
+                Some(endpoint) => Some(endpoint),
+                None => match bodies.accept(ticket) {
+                    Ok(endpoint) => Some(endpoint),
+                    Err(error) => {
+                        tracing::debug!("exchange {correlation} has no readable body: {error}");
+                        return;
+                    }
+                }
             }
-        },
+        }
         None => None
     };
 
-    let (mut reply_body, request_body) = match body {
+    // The reading half is kept rather than dropped: dropping it tells the
+    // peer nothing more will be read, and this slot is meant to serve the
+    // next exchange too.
+    let (mut reply_body, request_body, incoming) = match body {
         Some(endpoint) => {
             let (mut incoming, outgoing) = endpoint.split();
             let mut collected = Vec::new();
@@ -299,9 +365,9 @@ async fn serve(
                 tracing::debug!("exchange {correlation} body ended early: {error}");
                 return;
             }
-            (Some(outgoing), collected)
+            (Some(outgoing), collected, Some(incoming))
         }
-        None => (None, Vec::new())
+        None => (None, Vec::new(), None)
     };
 
     let request = match build_request(&exchange, request_body) {
@@ -358,8 +424,28 @@ async fn serve(
             tracing::debug!(correlation, "🛰 ✗ reply body was cut short: {error}");
             return;
         }
-        if let Err(error) = outgoing.shutdown().await {
+    }
+
+    // End the reply and put the slot back on the shelf, both under the lock.
+    //
+    // The order matters and the lock is what makes it safe. Ending the reply
+    // is what lets the edge reuse this slot: it reads to the end, gives its
+    // own halves up, and the next exchange may be written the instant after.
+    // If the shelving happened afterwards, that exchange could arrive while
+    // this process still had the open end in its hand — it would look for it,
+    // not find it, try to claim a side it already holds, and be refused. Six
+    // requests in a million found exactly that window.
+    //
+    // Holding the lock across both closes it: a lookup for the next exchange
+    // waits here, and by the time it runs the endpoint is on the shelf.
+    if let (Some(read), Some(mut write)) = (incoming, reply_body) {
+        let mut shelf = held.lock().expect("the held mutex is never poisoned");
+        if let Err(error) = write.finish() {
             tracing::debug!(correlation, "🛰 ✗ reply body did not close: {error}");
+        }
+        match Endpoint::rejoin(read, write) {
+            Ok(endpoint) => shelf.put(endpoint),
+            Err(error) => tracing::debug!(correlation, "🛰 ✗ slot not shelved: {error}")
         }
     }
 
