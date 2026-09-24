@@ -269,11 +269,28 @@ fn split_node(raw: &str) -> (Option<IpAddr>, Option<u16>) {
 /// One trusted peer, or a network of them.
 ///
 /// Parsed from `10.0.0.1`, `10.0.0.0/8`, `::1` or `fd00::/8`; a bare address
-/// means that address alone.
+/// means that address alone. It travels as that same text, so what an
+/// operator wrote is what a worker inherits.
 #[derive(Clone, Copy, Debug)]
 pub struct Network {
     address: IpAddr,
     prefix: u8
+}
+
+impl std::fmt::Display for Network {
+    /// The text it was parsed from, so a launch can be written back out and
+    /// read again without losing what the operator meant.
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>
+    ) -> std::fmt::Result {
+        let bits = if self.address.is_ipv4() { 32 } else { 128 };
+        if self.prefix == bits {
+            write!(f, "{}", self.address)
+        } else {
+            write!(f, "{}/{}", self.address, self.prefix)
+        }
+    }
 }
 
 impl Network {

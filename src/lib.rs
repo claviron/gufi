@@ -12,7 +12,7 @@ pub mod bench;
 mod application;
 pub mod asgi;
 mod http;
-mod options;
+pub(crate) mod options;
 mod orbit;
 mod python;
 pub mod routing;
@@ -26,7 +26,7 @@ pub mod trust;
 #[cfg(feature = "axum")]
 pub use claviron::axum;
 pub use http::{Bind, Protocols};
-pub use options::GufiOptions;
+pub use options::{CONFIG_FILE, GufiOptions};
 pub use python::{Error, Result, Runner};
 #[cfg(feature = "axum")]
 pub use routing::register;

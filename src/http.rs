@@ -353,7 +353,7 @@ where
 {
     // Framing two parsers could read differently, refused before anything
     // reads it as a request. Claviron's own check, not a second opinion.
-    if let Err(error) = claviron::http::forwarding::reject_request_smuggling(&request.headers()) {
+    if let Err(error) = claviron::http::forwarding::reject_request_smuggling(request.headers()) {
         return Ok(error_response(StatusCode::BAD_REQUEST, error.to_string()));
     }
 
