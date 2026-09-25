@@ -42,7 +42,7 @@ special status:
 |---|---|
 | `PythonApplicationService` | `boot()` brings the interpreter up and drives ASGI lifespan startup; `finalize()` takes it down. Declares `ProviderOrder::after::<InvocationRouter>()`, because its boot resolves that router. |
 | `Application` | holds the service the application registered. No lifecycle of its own — a registry entry, not a stage. |
-| `DevIngress` **or** `OrbitIngress` | `Runnable`, and exactly one of them: `RunMode` decides which is registered. One binds a listener, the other binds nothing and takes a lane in the shared fleet. Both serve until their generation is cancelled, then finish what they accepted. |
+| `DevIngress` **or** `OrbitIngress` | `Runnable`, and exactly one of them: `RunMode` decides which is registered. One binds a listener, the other binds nothing and takes a lane in its application's fleet. Both serve until their generation is cancelled, then finish what they accepted. |
 
 The order that falls out is the order that matters: the interpreter is up
 before any runnable is spawned, and it goes down after they have drained. A
@@ -169,9 +169,11 @@ reports `None`.
 
 ## Fleet ingress
 
-`RunMode::Orbit` binds nothing. The process joins the shared fleet, takes a
-lane, writes its application name in it, and waits — and a Claviron edge asked
-for that name writes an exchange into the lane. The service that answers is
+`RunMode::Orbit` binds nothing. The process joins its application's fleet —
+segments named after the application, which no other application maps —
+takes a lane, writes its application name in it, and waits; a Claviron edge
+asked for that name opens the same fleet and writes an exchange into the
+lane. The service that answers is
 the one `DevIngress` would have called, so `configure` never learns which door
 a request came through.
 

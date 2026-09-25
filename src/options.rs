@@ -112,7 +112,7 @@ pub struct GufiOptions {
     #[cfg_attr(feature = "cli", arg(short, long))]
     pub name: Option<String>,
 
-    /// Answer through the shared fleet, over shared memory.
+    /// Answer through this application's fleet, over shared memory.
     #[cfg_attr(feature = "cli", arg(long))]
     pub orbit: bool,
 

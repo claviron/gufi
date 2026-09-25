@@ -139,11 +139,11 @@ impl Runner {
         self
     }
 
-    /// Also answer through the shared fleet, reached over shared memory.
+    /// Also answer through this application's fleet, reached over shared
+    /// memory.
     ///
-    /// There is no fleet name to go with it. The transport's is the same on
-    /// every process on the machine, and this process's own is its
-    /// application name. Neither is a question for the application.
+    /// There is no fleet name to go with it: the fleet is named after the
+    /// application, so the application name is the whole of the address.
     pub fn orbit(
         mut self,
         orbit: bool

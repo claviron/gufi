@@ -60,7 +60,8 @@ use crate::routing::{Application, PeerAddrs, RequestScheme};
 /// here.
 const DISPATCH_HANDOFF: usize = 16;
 
-/// This process's place in the shared fleet, as a runnable Claviron owns.
+/// This process's place in its application's fleet, as a runnable Claviron
+/// owns.
 pub(crate) struct OrbitIngress {
     application: String
 }
@@ -122,21 +123,22 @@ impl Runnable<AppState> for OrbitIngress {
             .raw();
 
         let segment = Arc::new(
-            TransportSegment::shared().map_err(|error| registry::Error::msg(error.to_string()))?
+            TransportSegment::for_application(&self.application)
+                .map_err(|error| registry::Error::msg(error.to_string()))?
         );
         let lane = segment
             .inbox()
             .join(&self.application, incarnation)
             .map_err(|error| registry::Error::msg(error.to_string()))?;
         let bodies = Arc::new(
-            TransportBodies::shared(lane, incarnation)
+            TransportBodies::for_application(&self.application, lane, incarnation)
                 .map_err(|error| registry::Error::msg(error.to_string()))?
         );
 
         // Info, like the development listener's line and for the same reason:
         // this is what an operator looks for when asking whether the edge can
         // see this process.
-        tracing::info!("🛰 gufi serving '{}' on lane {lane} of the shared fleet", self.application);
+        tracing::info!("🛰 gufi serving '{}' on lane {lane} of its fleet", self.application);
 
         let (frames, mut arrived) = mpsc::channel::<Vec<u8>>(DISPATCH_HANDOFF);
         let stop = Arc::new(AtomicBool::new(false));
