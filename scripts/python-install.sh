@@ -14,6 +14,10 @@ set -euo pipefail
 #     GOT/PLT and nothing inlines across functions;
 #   the TLS model — each read of the thread state goes through `tlsdesc`.
 #
+# No distribution's Python is trusted for this, however it was built: the
+# runner is shipped as our own package, and it carries the interpreter this
+# script makes. Debian, Ubuntu and AlmaLinux 8 (production) alike.
+#
 # This builds the library without either: PGO and LTO as a release CPython,
 # `-fno-semantic-interposition`, and the initial-exec TLS model, which is
 # sound because a runner links libpython at start-up rather than dlopen-ing
@@ -71,6 +75,28 @@ DEBIAN_PACKAGES=(
   libedit-dev
 )
 
+# AlmaLinux 8 is the production host. Its gcc 8 builds PGO and LTO; the
+# decimal module falls back to CPython's bundled libmpdec, which EL8 does
+# not package, and readline stands in for libedit.
+ALMALINUX_PACKAGES=(
+  gcc
+  gcc-c++
+  make
+  curl
+  xz
+  pkgconf-pkg-config
+  openssl-devel
+  zlib-devel
+  bzip2-devel
+  libffi-devel
+  xz-devel
+  sqlite-devel
+  libuuid-devel
+  ncurses-devel
+  readline-devel
+  gdbm-devel
+)
+
 FREEBSD_PACKAGES=(
   gmake
   pkgconf
@@ -93,6 +119,19 @@ detect_os() {
   esac
 }
 
+detect_linux_family() {
+  if [[ -r /etc/os-release ]]; then
+    . /etc/os-release
+    case " ${ID:-} ${ID_LIKE:-} " in
+      *" debian "*|*" ubuntu "*) echo debian ;;
+      *" rhel "*|*" fedora "*|*" centos "*|*" almalinux "*|*" rocky "*) echo rhel ;;
+      *) echo unknown ;;
+    esac
+  else
+    echo unknown
+  fi
+}
+
 jobs_count() {
   if [[ -n "$MAKE_JOBS" ]]; then
     echo "$MAKE_JOBS"
@@ -105,7 +144,12 @@ jobs_count() {
 
 print_deps() {
   case "$(detect_os)" in
-    linux) echo "apt-get install -y ${DEBIAN_PACKAGES[*]}" ;;
+    linux)
+      case "$(detect_linux_family)" in
+        rhel) echo "dnf install -y ${ALMALINUX_PACKAGES[*]}" ;;
+        *) echo "apt-get install -y ${DEBIAN_PACKAGES[*]}" ;;
+      esac
+      ;;
     freebsd) echo "pkg install -y ${FREEBSD_PACKAGES[*]}" ;;
   esac
 }
@@ -114,8 +158,15 @@ install_deps() {
   [[ "$SKIP_APT" == "1" ]] && { log "SKIP_APT=1, skipping package install"; return 0; }
   case "$(detect_os)" in
     linux)
-      command -v apt-get >/dev/null 2>&1 || { log "no apt-get; install: $(print_deps)"; return 0; }
-      sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q "${DEBIAN_PACKAGES[@]}"
+      case "$(detect_linux_family)" in
+        debian)
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q "${DEBIAN_PACKAGES[@]}"
+          ;;
+        rhel)
+          sudo dnf install -y "${ALMALINUX_PACKAGES[@]}"
+          ;;
+        *) log "unknown Linux family; install by hand: $(print_deps)" ;;
+      esac
       ;;
     freebsd)
       sudo pkg install -y "${FREEBSD_PACKAGES[@]}"
@@ -169,7 +220,7 @@ verify_install() {
   [[ -x "$python" ]] || die "interpreter missing: $python"
   "$python" -c '
 import sys, sysconfig
-import ssl, sqlite3, ctypes, decimal, lzma, bz2, zlib, uuid, readline
+import ssl, sqlite3, ctypes, decimal, lzma, bz2, zlib, uuid, readline, _struct
 print("OK:", sys.version.split()[0],
       "shared" if sysconfig.get_config_var("Py_ENABLE_SHARED") else "static",
       sysconfig.get_config_var("LIBDIR"))
@@ -184,6 +235,7 @@ print("OK:", sys.version.split()[0],
 
 dry_run() {
   echo "OS: $(detect_os)"
+  [[ "$(detect_os)" == "linux" ]] && echo "Linux family: $(detect_linux_family)"
   echo "version: $PYTHON_VERSION"
   echo "source: $PYTHON_SRC_DIR"
   echo "prefix: $PYTHON_DIR"
