@@ -93,7 +93,7 @@ async def drive_http(application, exchange, state):
         exchange.fail(_exception_text(error))
 
 
-async def drive_websocket(application, socket, state):
+async def drive_websocket(application, socket, state, waiters):
     headers = [(bytes(name), bytes(value)) for name, value in socket.headers]
     subprotocols = []
     for name, value in headers:
@@ -123,7 +123,15 @@ async def drive_websocket(application, socket, state):
         if not connected:
             connected = True
             return {"type": "websocket.connect"}
-        return await socket.receive()
+        event = socket.try_receive()
+        if event is None:
+            waiter = asyncio.get_running_loop().create_future()
+            waiters[socket.id] = (socket, waiter)
+            try:
+                event = await waiter
+            finally:
+                waiters.pop(socket.id, None)
+        return event
 
     async def send(message):
         kind = message.get("type")
@@ -212,11 +220,25 @@ async def drive(application, control):
     # The loop takes requests itself: the doorbell is one more descriptor it
     # watches, and each time it is readable every request waiting is taken at
     # once. No second Python thread asks for work, so the GIL has one owner.
+    # WebSockets waiting for a message, by id: the doorbell names them and
+    # the loop resolves their waits here, on its own thread.
+    waiters = {}
+
     def answer():
-        exchanges, last = control.take_exchanges()
+        exchanges, ready, last = control.take_exchanges()
+        for socket_id in ready:
+            entry = waiters.pop(socket_id, None)
+            if entry is None:
+                continue
+            socket, waiter = entry
+            event = socket.try_receive()
+            if event is None:
+                waiters[socket_id] = entry
+            elif not waiter.done():
+                waiter.set_result(event)
         for exchange in exchanges:
             if exchange.kind == "websocket":
-                work = drive_websocket(application, exchange, state)
+                work = drive_websocket(application, exchange, state, waiters)
             else:
                 work = drive_http(application, exchange, state)
             request = loop.create_task(work)
@@ -539,12 +561,15 @@ impl PythonApplicationHandle {
         let (decision, decided) = oneshot::channel();
         // One message in flight each way: the side that is behind makes the
         // other wait, rather than a buffer growing between them.
-        let (inbound, inbound_rx) = chunks::channel(1);
+        let id = WEBSOCKET_IDS.fetch_add(1, Ordering::Relaxed);
+        let shared = Arc::new(Inbound::default());
         let (outbound_tx, outbound) = chunks::channel(1);
-        let ends = WebSocketEnds { decision, inbound: inbound_rx, outbound: outbound_tx };
+        let ends =
+            WebSocketEnds { id, decision, inbound: Arc::clone(&shared), outbound: outbound_tx };
         self.commands
             .send(ApplicationCommand::WebSocket { request: Box::new(request), ends })
             .map_err(|_| Error::ApplicationStopped)?;
+        let inbound = WebSocketInbound { id, shared, commands: self.commands.clone() };
         Ok(WebSocketSession { decision: decided, inbound, outbound })
     }
 }
@@ -601,8 +626,17 @@ fn commands() -> Result<(Commands, Doorbell)> {
 }
 
 enum ApplicationCommand {
-    Http { request: Box<HttpRequest>, response: oneshot::Sender<Result<HttpResponse>> },
-    WebSocket { request: Box<HttpRequest>, ends: WebSocketEnds },
+    Http {
+        request: Box<HttpRequest>,
+        response: oneshot::Sender<Result<HttpResponse>>
+    },
+    WebSocket {
+        request: Box<HttpRequest>,
+        ends: WebSocketEnds
+    },
+    /// A WebSocket the application is waiting on has a message, or its client
+    /// is gone. The loop resolves the wait itself.
+    Ready(u64),
     Shutdown
 }
 
@@ -622,17 +656,96 @@ pub enum WebSocketDecision {
 pub struct WebSocketSession {
     pub decision: oneshot::Receiver<WebSocketDecision>,
     /// The client's messages, to the application.
-    pub inbound: chunks::Sender<Message>,
+    pub inbound: WebSocketInbound,
     /// The application's messages, to the client.
     pub outbound: chunks::Receiver<Message>
 }
 
 /// The application's side of the same, handed to Python.
 struct WebSocketEnds {
+    id: u64,
     decision: oneshot::Sender<WebSocketDecision>,
-    inbound: chunks::Receiver<Message>,
+    inbound: Arc<Inbound>,
     outbound: chunks::Sender<Message>
 }
+
+/// The client's messages waiting for the application.
+///
+/// Handed over the way requests are: the application's loop takes them
+/// itself. A message is queued here, and only when the application is already
+/// waiting does the doorbell ring for it — no thread but the loop's touches
+/// Python, and a message that arrives before the application asks for it costs
+/// no wake at all.
+#[derive(Default)]
+struct Inbound {
+    state: Mutex<InboundState>,
+    /// Signalled when the application takes a message: room for the next.
+    room: tokio::sync::Notify
+}
+
+#[derive(Default)]
+struct InboundState {
+    queue: std::collections::VecDeque<Message>,
+    /// The client is gone; the application reads a disconnect.
+    closed: bool,
+    /// The application asked and found nothing; the next message rings.
+    waiting: bool,
+    /// The application is gone; nothing more is worth queueing.
+    abandoned: bool
+}
+
+/// Where the client's messages go, held by the ingress.
+pub struct WebSocketInbound {
+    id: u64,
+    shared: Arc<Inbound>,
+    commands: Commands
+}
+
+impl WebSocketInbound {
+    /// Queue one message, waiting while the last is still unread: a client
+    /// faster than the application is slowed at the slot, not buffered here.
+    /// `false` once the application is gone.
+    pub async fn deliver(
+        &self,
+        message: Message
+    ) -> bool {
+        let mut message = Some(message);
+        loop {
+            let room = self.shared.room.notified();
+            tokio::pin!(room);
+            room.as_mut().enable();
+            {
+                let mut state = self.shared.state.lock().unwrap();
+                if state.abandoned {
+                    return false;
+                }
+                if state.queue.is_empty() {
+                    state.queue.push_back(message.take().expect("delivered once"));
+                    let ring = std::mem::take(&mut state.waiting);
+                    drop(state);
+                    if ring {
+                        let _ = self.commands.send(ApplicationCommand::Ready(self.id));
+                    }
+                    return true;
+                }
+            }
+            room.await;
+        }
+    }
+
+    /// The client is gone.
+    pub fn end(&self) {
+        let mut state = self.shared.state.lock().unwrap();
+        state.closed = true;
+        let ring = std::mem::take(&mut state.waiting);
+        drop(state);
+        if ring {
+            let _ = self.commands.send(ApplicationCommand::Ready(self.id));
+        }
+    }
+}
+
+static WEBSOCKET_IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 #[pyclass]
 struct LifespanControl {
@@ -682,7 +795,7 @@ impl LifespanControl {
     fn take_exchanges(
         &self,
         py: Python<'_>
-    ) -> PyResult<(Vec<Py<PyAny>>, bool)> {
+    ) -> PyResult<(Vec<Py<PyAny>>, Vec<u64>, bool)> {
         let doorbell = self.doorbell.lock().unwrap();
         let mut rung = [0u8; 64];
         let mut closed = false;
@@ -699,8 +812,10 @@ impl LifespanControl {
         doorbell.armed.store(false, Ordering::SeqCst);
 
         let mut exchanges = Vec::new();
+        let mut ready = Vec::new();
         loop {
             match doorbell.queue.try_recv() {
+                Ok(ApplicationCommand::Ready(id)) => ready.push(id),
                 Ok(ApplicationCommand::Http { request, response }) => {
                     exchanges.push(Py::new(py, HttpExchange::new(*request, response))?.into_any());
                 }
@@ -708,9 +823,9 @@ impl LifespanControl {
                     exchanges.push(Py::new(py, WebSocketExchange::new(*request, ends))?.into_any());
                 }
                 Ok(ApplicationCommand::Shutdown) | Err(mpsc::TryRecvError::Disconnected) => {
-                    return Ok((exchanges, true));
+                    return Ok((exchanges, ready, true));
                 }
-                Err(mpsc::TryRecvError::Empty) => return Ok((exchanges, closed))
+                Err(mpsc::TryRecvError::Empty) => return Ok((exchanges, ready, closed))
             }
         }
     }
@@ -938,9 +1053,10 @@ impl Drop for HttpExchange {
 
 #[pyclass]
 struct WebSocketExchange {
+    id: u64,
     request: HttpRequest,
     decision: Mutex<Option<oneshot::Sender<WebSocketDecision>>>,
-    inbound: Arc<tokio::sync::Mutex<chunks::Receiver<Message>>>,
+    inbound: Arc<Inbound>,
     outbound: Mutex<Option<chunks::Sender<Message>>>
 }
 
@@ -950,9 +1066,10 @@ impl WebSocketExchange {
         ends: WebSocketEnds
     ) -> Self {
         Self {
+            id: ends.id,
             request,
             decision: Mutex::new(Some(ends.decision)),
-            inbound: Arc::new(tokio::sync::Mutex::new(ends.inbound)),
+            inbound: ends.inbound,
             outbound: Mutex::new(Some(ends.outbound))
         }
     }
@@ -962,6 +1079,11 @@ impl WebSocketExchange {
             let _ = decision.send(WebSocketDecision::Reject);
         }
     }
+
+    fn abandon(&self) {
+        self.inbound.state.lock().unwrap().abandoned = true;
+        self.inbound.room.notify_waiters();
+    }
 }
 
 #[pymethods]
@@ -969,6 +1091,11 @@ impl WebSocketExchange {
     #[getter]
     fn kind(&self) -> &'static str {
         "websocket"
+    }
+
+    #[getter]
+    fn id(&self) -> u64 {
+        self.id
     }
 
     #[getter]
@@ -1031,38 +1158,48 @@ impl WebSocketExchange {
     }
 
     /// The next `websocket.receive`, or `websocket.disconnect` once the client
-    /// is gone. Always awaited.
-    fn receive<'py>(
+    /// is gone — or `None` when nothing is there yet. The application then
+    /// waits on a future of its own loop, and the doorbell resolves it when a
+    /// message comes.
+    fn try_receive(
         &self,
-        py: Python<'py>
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let inbound = Arc::clone(&self.inbound);
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let message = inbound.lock().await.recv().await;
-            Python::attach(|py| -> PyResult<Py<PyAny>> {
-                let event = PyDict::new(py);
-                match message {
-                    Some(Message::Text(text)) => {
-                        event.set_item("type", "websocket.receive")?;
-                        event.set_item("text", text)?;
-                    }
-                    Some(Message::Binary(bytes)) => {
-                        event.set_item("type", "websocket.receive")?;
-                        event.set_item("bytes", pyo3::types::PyBytes::new(py, &bytes))?;
-                    }
-                    Some(Message::Close { code, reason }) => {
-                        event.set_item("type", "websocket.disconnect")?;
-                        event.set_item("code", code)?;
-                        event.set_item("reason", reason)?;
-                    }
-                    None => {
-                        event.set_item("type", "websocket.disconnect")?;
-                        event.set_item("code", 1006)?;
-                    }
+        py: Python<'_>
+    ) -> PyResult<Option<Py<PyAny>>> {
+        let message = {
+            let mut state = self.inbound.state.lock().unwrap();
+            match state.queue.pop_front() {
+                Some(message) => Some(message),
+                None if state.closed => None,
+                None => {
+                    state.waiting = true;
+                    return Ok(None);
                 }
-                Ok(event.into_any().unbind())
-            })
-        })
+            }
+        };
+        if message.is_some() {
+            self.inbound.room.notify_one();
+        }
+        let event = PyDict::new(py);
+        match message {
+            Some(Message::Text(text)) => {
+                event.set_item("type", "websocket.receive")?;
+                event.set_item("text", text)?;
+            }
+            Some(Message::Binary(bytes)) => {
+                event.set_item("type", "websocket.receive")?;
+                event.set_item("bytes", pyo3::types::PyBytes::new(py, &bytes))?;
+            }
+            Some(Message::Close { code, reason }) => {
+                event.set_item("type", "websocket.disconnect")?;
+                event.set_item("code", code)?;
+                event.set_item("reason", reason)?;
+            }
+            None => {
+                event.set_item("type", "websocket.disconnect")?;
+                event.set_item("code", 1006)?;
+            }
+        }
+        Ok(Some(event.into_any().unbind()))
     }
 
     /// `websocket.send`. `None` when taken at once, an awaitable when the
@@ -1127,12 +1264,14 @@ impl WebSocketExchange {
     fn finish(&self) {
         self.refuse_if_undecided();
         self.outbound.lock().unwrap().take();
+        self.abandon();
     }
 }
 
 impl Drop for WebSocketExchange {
     fn drop(&mut self) {
         self.refuse_if_undecided();
+        self.abandon();
     }
 }
 

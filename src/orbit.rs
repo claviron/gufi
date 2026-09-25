@@ -497,10 +497,11 @@ async fn serve_websocket(
     let from_client = async move {
         while let Ok(Some(message)) = read_message(&mut incoming).await {
             let closing = matches!(message, Message::Close { .. });
-            if inbound.send(message).await.is_err() || closing {
+            if !inbound.deliver(message).await || closing {
                 break;
             }
         }
+        inbound.end();
     };
     // The application's messages to the client, until it closes or returns.
     let to_client = async move {
