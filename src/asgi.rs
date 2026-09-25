@@ -315,7 +315,7 @@ impl PythonApplication {
             return Err(Error::MissingVirtualEnvironment(path.clone()));
         }
 
-        Python::initialize();
+        initialize_interpreter(self.virtual_environment.as_deref())?;
 
         let definition = self.clone();
         let (commands, command_rx) = mpsc::channel();
@@ -718,6 +718,74 @@ fn install_claviron_module(
         modules.cast_into::<PyDict>().map_err(|error| Error::Python(error.to_string()))?;
     PyDictMethods::set_item(&modules, "claviron", module)
         .map_err(|error| python_error(py, error))?;
+    Ok(())
+}
+
+/// Start the interpreter as the environment's own `python` would start.
+///
+/// An embedded interpreter finds its standard library by walking up from the
+/// executable it is told it is — and by default that is this binary, which
+/// lives nowhere near a Python installation. The walk ends at `/`, and on a
+/// merged-/usr system `/lib/python3.x` is the distribution's library: a
+/// 3.13.13 interpreter then runs Debian's 3.13.5 stdlib without a word, and
+/// only fails when a C module the two builds disagree on is missing.
+///
+/// Naming the environment's `bin/python` as the executable makes CPython read
+/// its `pyvenv.cfg`: `home` gives the installation the library comes from,
+/// and the environment becomes `sys.prefix`, exactly as when the application
+/// is run by that `python`. Without an environment, CPython's own search
+/// stands as before.
+fn initialize_interpreter(virtual_environment: Option<&Path>) -> Result<()> {
+    let executable = virtual_environment
+        .map(|venv| {
+            if cfg!(windows) {
+                venv.join("Scripts").join("python.exe")
+            } else {
+                venv.join("bin").join("python")
+            }
+        })
+        .filter(|python| python.exists());
+    let Some(executable) = executable else {
+        Python::initialize();
+        return Ok(());
+    };
+    let executable =
+        CString::new(path_text(&executable)?).map_err(|error| Error::Python(error.to_string()))?;
+
+    // SAFETY: the config is initialised before use and cleared on every path;
+    // the interpreter is started at most once, before any other Python call,
+    // and the GIL it hands this thread is released as `Python::initialize`
+    // releases it.
+    unsafe {
+        if pyo3::ffi::Py_IsInitialized() != 0 {
+            return Ok(());
+        }
+        let mut config = std::mem::MaybeUninit::<pyo3::ffi::PyConfig>::uninit();
+        pyo3::ffi::PyConfig_InitPythonConfig(config.as_mut_ptr());
+        let mut config = config.assume_init();
+        // What `Py_InitializeEx(0)` leaves alone: the process owns its
+        // signals, its argv and its stdio.
+        config.install_signal_handlers = 0;
+        config.parse_argv = 0;
+        config.configure_c_stdio = 0;
+
+        let config_ptr: *mut pyo3::ffi::PyConfig = &mut config;
+        let status = pyo3::ffi::PyConfig_SetBytesString(
+            config_ptr,
+            &raw mut (*config_ptr).executable,
+            executable.as_ptr()
+        );
+        if pyo3::ffi::PyStatus_Exception(status) != 0 {
+            pyo3::ffi::PyConfig_Clear(&mut config);
+            return Err(Error::Python("could not set the interpreter's executable".to_owned()));
+        }
+        let status = pyo3::ffi::Py_InitializeFromConfig(&config);
+        pyo3::ffi::PyConfig_Clear(&mut config);
+        if pyo3::ffi::PyStatus_Exception(status) != 0 {
+            return Err(Error::Python("the interpreter failed to start".to_owned()));
+        }
+        pyo3::ffi::PyEval_SaveThread();
+    }
     Ok(())
 }
 
