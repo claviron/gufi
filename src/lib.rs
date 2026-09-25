@@ -19,6 +19,8 @@ pub mod routing;
 #[cfg(feature = "tls")]
 pub mod tls;
 pub mod trust;
+#[cfg(feature = "websocket")]
+pub mod websocket;
 
 /// The axum `register` builds against — Claviron's, re-exported so an
 /// application reaches it through the crate it actually depends on and cannot

@@ -128,6 +128,9 @@ pub(crate) struct Server {
     bind: Bind,
     protocols: Protocols,
     trust: Arc<Trust>,
+    /// The interpreter, for a WebSocket: its handshake goes to Python rather
+    /// than through the application's routes.
+    python: Option<crate::asgi::PythonApplicationHandle>,
     #[cfg(feature = "tls")]
     acceptor: Option<tokio_rustls::TlsAcceptor>
 }
@@ -149,9 +152,18 @@ impl Server {
             bind,
             protocols,
             trust,
+            python: None,
             #[cfg(feature = "tls")]
             acceptor: None
         })
+    }
+
+    pub(crate) fn with_python(
+        mut self,
+        python: Option<crate::asgi::PythonApplicationHandle>
+    ) -> Self {
+        self.python = python;
+        self
     }
 
     pub(crate) fn bound(&self) -> &Bind {
@@ -197,6 +209,7 @@ impl Server {
                     let handler = handler.clone();
                     let protocols = self.protocols;
                     let trust = Arc::clone(&self.trust);
+                    let python = self.python.clone();
                     #[cfg(feature = "tls")]
                     let acceptor = self.acceptor.clone();
                     connections.spawn(async move {
@@ -209,17 +222,21 @@ impl Server {
                                     .await
                                     .map_err(Error::Io)?;
                                 serve_secure_connection(
-                                    stream, peer, local, protocols, trust, handler
+                                    stream, peer, local, protocols, trust, python, handler
                                 )
                                 .await
                             }
                             Accepted::Tcp(stream) => {
-                                serve_connection(stream, peer, local, protocols, trust, handler)
-                                    .await
+                                serve_connection(
+                                    stream, peer, local, protocols, trust, python, handler
+                                )
+                                .await
                             }
                             Accepted::Uds(stream) => {
-                                serve_connection(stream, None, None, protocols, trust, handler)
-                                    .await
+                                serve_connection(
+                                    stream, None, None, protocols, trust, python, handler
+                                )
+                                .await
                             }
                         }
                     });
@@ -275,6 +292,7 @@ async fn serve_secure_connection<I, H, HF>(
     server: Option<SocketAddr>,
     protocols: Protocols,
     trust: Arc<Trust>,
+    python: Option<crate::asgi::PythonApplicationHandle>,
     handler: H
 ) -> Result<()>
 where
@@ -282,7 +300,7 @@ where
     H: Fn(AppRequest) -> HF + Clone + Send + Sync + 'static,
     HF: Future<Output = AppResponse> + Send + 'static
 {
-    serve_with_scheme(stream, peer, server, protocols, trust, "https", handler).await
+    serve_with_scheme(stream, peer, server, protocols, trust, python, "https", handler).await
 }
 
 async fn serve_connection<I, H, HF>(
@@ -291,6 +309,7 @@ async fn serve_connection<I, H, HF>(
     server: Option<SocketAddr>,
     protocols: Protocols,
     trust: Arc<Trust>,
+    python: Option<crate::asgi::PythonApplicationHandle>,
     handler: H
 ) -> Result<()>
 where
@@ -298,7 +317,7 @@ where
     H: Fn(AppRequest) -> HF + Clone + Send + Sync + 'static,
     HF: Future<Output = AppResponse> + Send + 'static
 {
-    serve_with_scheme(stream, peer, server, protocols, trust, "http", handler).await
+    serve_with_scheme(stream, peer, server, protocols, trust, python, "http", handler).await
 }
 
 async fn serve_with_scheme<I, H, HF>(
@@ -307,6 +326,7 @@ async fn serve_with_scheme<I, H, HF>(
     server: Option<SocketAddr>,
     protocols: Protocols,
     trust: Arc<Trust>,
+    python: Option<crate::asgi::PythonApplicationHandle>,
     scheme: &'static str,
     handler: H
 ) -> Result<()>
@@ -316,12 +336,25 @@ where
     HF: Future<Output = AppResponse> + Send + 'static
 {
     let service = service_fn(move |request| {
-        handle_request(request, peer, server, Arc::clone(&trust), scheme, handler.clone())
+        handle_request(
+            request,
+            peer,
+            server,
+            Arc::clone(&trust),
+            python.clone(),
+            scheme,
+            handler.clone()
+        )
     });
     let io = TokioIo::new(stream);
     match (protocols.h1, protocols.h2) {
         (true, false) => {
-            hyper::server::conn::http1::Builder::new().serve_connection(io, service).await?
+            // With upgrades: a WebSocket takes the connection over once its
+            // handshake is answered.
+            hyper::server::conn::http1::Builder::new()
+                .serve_connection(io, service)
+                .with_upgrades()
+                .await?
         }
         (false, true) => {
             hyper::server::conn::http2::Builder::new(TokioExecutor::new())
@@ -331,7 +364,7 @@ where
         // Whatever the client speaks: HTTP/1 with an upgrade, or HTTP/2 with
         // prior knowledge.
         _ => hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
-            .serve_connection(io, service)
+            .serve_connection_with_upgrades(io, service)
             .await
             .map_err(|error| Error::Io(std::io::Error::other(error.to_string())))?
     }
@@ -343,6 +376,7 @@ async fn handle_request<H, HF>(
     peer: Option<SocketAddr>,
     server: Option<SocketAddr>,
     trust: Arc<Trust>,
+    python: Option<crate::asgi::PythonApplicationHandle>,
     scheme: &'static str,
     handler: H
 ) -> std::result::Result<AppResponse, Infallible>
@@ -359,6 +393,40 @@ where
     // Who the client is, and under which scheme — the socket's answer unless
     // the peer is one whose word this launch takes.
     let resolved = trust.resolve(peer, request.headers());
+
+    // A WebSocket goes to Python before its body is read: after the upgrade
+    // the body is the connection itself.
+    #[cfg(feature = "websocket")]
+    if let Some(python) = python.as_ref()
+        && crate::websocket::is_upgrade(&request)
+    {
+        let mut headers: Vec<(Vec<u8>, Vec<u8>)> = request
+            .headers()
+            .iter()
+            .filter(|(name, _)| resolved.host.is_none() || *name != http::header::HOST)
+            .map(|(name, value)| (name.as_str().as_bytes().to_vec(), value.as_bytes().to_vec()))
+            .collect();
+        if let Some(host) = resolved.host.as_deref() {
+            headers.push((b"host".to_vec(), host.as_bytes().to_vec()));
+        }
+        let scope = crate::asgi::HttpRequest {
+            method: request.method().as_str().to_owned(),
+            scheme: resolved.scheme.clone().unwrap_or_else(|| scheme.to_owned()),
+            http_version: "1.1".to_owned(),
+            path: percent_encoding::percent_decode_str(request.uri().path())
+                .decode_utf8_lossy()
+                .into_owned(),
+            raw_path: request.uri().path().as_bytes().to_vec(),
+            query_string: request.uri().query().unwrap_or_default().as_bytes().to_vec(),
+            headers,
+            body: Vec::new(),
+            client: resolved.client,
+            server
+        };
+        return Ok(crate::websocket::serve(request, scope, python).await);
+    }
+    #[cfg(not(feature = "websocket"))]
+    let _ = &python;
 
     let (mut parts, body) = request.into_parts();
     // A trusted proxy reported the host the client asked for; an application
@@ -501,12 +569,17 @@ impl Runnable<AppState> for HttpIngress {
             );
 
             let application = Arc::clone(&application);
+            let python = state
+                .registry_ref()
+                .resolve::<crate::application::PythonApplicationService>()
+                .and_then(|python| python.handle());
             let cancelled = context.clone();
             #[cfg(feature = "tls")]
             let acceptor = acceptor.clone();
             listeners.spawn(async move {
                 #[cfg(feature = "tls")]
                 let server = server.with_tls(acceptor);
+                let server = server.with_python(python);
                 server
                     .serve(
                         move |request| {
