@@ -83,6 +83,9 @@ websocket = ["dep:fastwebsockets"]
 # LEGACY_LINUX: run on Linux kernels older than 5.3 (AlmaLinux 8's 4.18),
 # which have no pidfd for watching worker processes. Off by default.
 legacy-linux = ["claviron/legacy-linux"]
+# Experimental: Orbit streams woken by the async runtime rather than a driver
+# thread. Off by default until measured.
+orbit-doorbell = ["claviron/orbit-doorbell"]
 # Two Rust routes to measure your own against. Off by default: routes an
 # application did not write do not belong in production by accident.
 bench = ["axum"]
