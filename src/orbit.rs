@@ -31,8 +31,8 @@ use std::time::Instant;
 use async_trait::async_trait;
 use bytes::Bytes;
 use claviron::orbit::transport::{
-    Exchange, ExchangeReply, FrameKind, TRANSPORT_INBOX_PAYLOAD_CAPACITY, TransportBodies,
-    TransportSegment, frame_kind, parking_supported
+    Exchange, ExchangeReply, FrameKind, TRANSPORT_BUFFER_BYTES, TransportBodies, TransportSegment,
+    frame_kind, parking_supported
 };
 use claviron::runtime::{
     AppState, FleetIncarnation, Provider, RunContext, Runnable, ServiceStartPolicy, registry
@@ -318,7 +318,7 @@ async fn serve(
     // The application answers whole today (T-20260925-9 streams it), so the
     // body is in hand before the head goes.
     let bytes = response_body.collect().await.map_or_else(|_| Bytes::new(), |body| body.to_bytes());
-    let mut reply = ExchangeReply {
+    let reply = ExchangeReply {
         correlation,
         status: parts.status.as_u16(),
         headers: parts
@@ -326,22 +326,26 @@ async fn serve(
             .iter()
             .map(|(name, value)| (name.as_str().as_bytes().to_vec(), value.as_bytes().to_vec()))
             .collect(),
-        body: exchange.body,
-        inline: None
+        body: exchange.body
     };
 
-    // Buffered when it fits: a body that rides in the frame with its head
-    // costs no slot write and no second wake. The frame's own capacity is the
-    // limit — nothing is invented here — so the reply is encoded with the body
-    // and, if that is too large for a frame, again without it, to stream.
-    reply.inline = Some(bytes.to_vec());
-    let (encoded, buffered) = match reply.encode() {
-        Ok(encoded) if encoded.len() <= TRANSPORT_INBOX_PAYLOAD_CAPACITY => (Ok(encoded), true),
-        _ => {
-            reply.inline = None;
-            (reply.encode(), false)
+    // The body first when it fits the stream's window: written whole and
+    // ended before the head goes, it is waiting when the head wakes the edge,
+    // which then never parks on an empty slot. A body larger than the window
+    // would wait for a reader not yet told to read, so it follows the head.
+    let buffered = bytes.len() <= TRANSPORT_BUFFER_BYTES;
+    if buffered && let Some(outgoing) = reply_body.as_mut() {
+        if !bytes.is_empty()
+            && let Err(error) = outgoing.write_all(&bytes).await
+        {
+            tracing::debug!(correlation, "🛰 ✗ reply body was cut short: {error}");
+            return;
         }
-    };
+        if let Err(error) = outgoing.shutdown().await {
+            tracing::debug!(correlation, "🛰 ✗ reply body did not close: {error}");
+        }
+    }
+    let encoded = reply.encode();
 
     // The frame first and the body after it. The edge cannot start answering
     // its client without a status, and a body longer than the stream's window
@@ -368,8 +372,7 @@ async fn serve(
 
     let sent = bytes.len();
     if buffered {
-        // The slot carries nothing; its half goes back unwritten.
-        drop(reply_body);
+        // Already written, before the head.
     } else if let Some(outgoing) = reply_body.as_mut() {
         if !bytes.is_empty()
             && let Err(error) = outgoing.write_all(&bytes).await
