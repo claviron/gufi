@@ -31,8 +31,8 @@ use std::time::Instant;
 use async_trait::async_trait;
 use bytes::Bytes;
 use claviron::orbit::transport::{
-    Exchange, ExchangeReply, FrameKind, TransportBodies, TransportSegment, frame_kind,
-    parking_supported
+    Exchange, ExchangeReply, FrameKind, TRANSPORT_INBOX_PAYLOAD_CAPACITY, TransportBodies,
+    TransportSegment, frame_kind, parking_supported
 };
 use claviron::runtime::{
     AppState, FleetIncarnation, Provider, RunContext, Runnable, ServiceStartPolicy, registry
@@ -315,7 +315,10 @@ async fn serve(
     };
 
     let (parts, response_body) = application.call(request).await.into_parts();
-    let reply = ExchangeReply {
+    // The application answers whole today (T-20260925-9 streams it), so the
+    // body is in hand before the head goes.
+    let bytes = response_body.collect().await.map_or_else(|_| Bytes::new(), |body| body.to_bytes());
+    let mut reply = ExchangeReply {
         correlation,
         status: parts.status.as_u16(),
         headers: parts
@@ -323,16 +326,30 @@ async fn serve(
             .iter()
             .map(|(name, value)| (name.as_str().as_bytes().to_vec(), value.as_bytes().to_vec()))
             .collect(),
-        body: exchange.body
+        body: exchange.body,
+        inline: None
+    };
+
+    // Buffered when it fits: a body that rides in the frame with its head
+    // costs no slot write and no second wake. The frame's own capacity is the
+    // limit — nothing is invented here — so the reply is encoded with the body
+    // and, if that is too large for a frame, again without it, to stream.
+    reply.inline = Some(bytes.to_vec());
+    let (encoded, buffered) = match reply.encode() {
+        Ok(encoded) if encoded.len() <= TRANSPORT_INBOX_PAYLOAD_CAPACITY => (Ok(encoded), true),
+        _ => {
+            reply.inline = None;
+            (reply.encode(), false)
+        }
     };
 
     // The frame first and the body after it. The edge cannot start answering
     // its client without a status, and a body longer than the stream's window
     // would wait for a reader that has not been told to read yet.
     let status = reply.status;
-    match reply.encode() {
-        Ok(bytes) => {
-            if let Err(error) = segment.inbox().write(origin, &bytes) {
+    match encoded {
+        Ok(frame) => {
+            if let Err(error) = segment.inbox().write(origin, &frame) {
                 // Nobody to tell: the caller's lane is full or its process is
                 // gone, and either way the answer has nowhere to go.
                 tracing::debug!(correlation, "🛰 ✗ reply was not delivered: {error}");
@@ -349,11 +366,11 @@ async fn serve(
     // response the two are nothing alike.
     let answered = arrived.elapsed();
 
-    let mut sent = 0usize;
-    if let Some(outgoing) = reply_body.as_mut() {
-        let bytes =
-            response_body.collect().await.map_or_else(|_| Bytes::new(), |body| body.to_bytes());
-        sent = bytes.len();
+    let sent = bytes.len();
+    if buffered {
+        // The slot carries nothing; its half goes back unwritten.
+        drop(reply_body);
+    } else if let Some(outgoing) = reply_body.as_mut() {
         if !bytes.is_empty()
             && let Err(error) = outgoing.write_all(&bytes).await
         {
@@ -367,8 +384,9 @@ async fn serve(
 
     tracing::debug!(
         correlation,
-        "🛰 ← {status} in {:?} (head {answered:?}, {sent} B)",
-        arrived.elapsed()
+        "🛰 ← {status} in {:?} (head {answered:?}, {sent} B{})",
+        arrived.elapsed(),
+        if buffered { ", buffered" } else { "" }
     );
 }
 
