@@ -1,8 +1,12 @@
 //! Transport-independent in-process ASGI application engine.
 
 use std::ffi::CString;
+use std::io::{Read, Write};
 use std::net::SocketAddr;
+use std::os::fd::AsRawFd;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 
@@ -138,13 +142,26 @@ async def drive(application, control):
 
     control.startup_complete()
     requests = set()
-    while True:
-        exchange = await asyncio.to_thread(control.next_exchange)
-        if exchange is None:
-            break
-        request = asyncio.create_task(drive_http(application, exchange, state))
-        requests.add(request)
-        request.add_done_callback(requests.discard)
+    loop = asyncio.get_running_loop()
+    finished = loop.create_future()
+    doorbell = control.doorbell()
+
+    # The loop takes requests itself: the doorbell is one more descriptor it
+    # watches, and each time it is readable every request waiting is taken at
+    # once. No second Python thread asks for work, so the GIL has one owner.
+    def answer():
+        exchanges, last = control.take_exchanges()
+        for exchange in exchanges:
+            request = loop.create_task(drive_http(application, exchange, state))
+            requests.add(request)
+            request.add_done_callback(requests.discard)
+        if last and not finished.done():
+            loop.remove_reader(doorbell)
+            finished.set_result(None)
+
+    loop.add_reader(doorbell, answer)
+    answer()
+    await finished
 
     if requests:
         await asyncio.gather(*requests, return_exceptions=True)
@@ -318,11 +335,11 @@ impl PythonApplication {
         initialize_interpreter(self.virtual_environment.as_deref())?;
 
         let definition = self.clone();
-        let (commands, command_rx) = mpsc::channel();
+        let (commands, doorbell) = commands()?;
         let (startup_tx, startup_rx) = mpsc::sync_channel(1);
         let handle = thread::Builder::new()
             .name("claviron-asgi".to_owned())
-            .spawn(move || run_application(definition, command_rx, startup_tx))
+            .spawn(move || run_application(definition, doorbell, startup_tx))
             .map_err(|error| Error::Python(error.to_string()))?;
 
         match startup_rx.recv() {
@@ -340,7 +357,7 @@ impl PythonApplication {
 }
 
 pub struct RunningPythonApplication {
-    commands: mpsc::Sender<ApplicationCommand>,
+    commands: Commands,
     handle: Option<JoinHandle<Result<()>>>
 }
 
@@ -371,7 +388,7 @@ impl Drop for RunningPythonApplication {
 
 #[derive(Clone)]
 pub struct PythonApplicationHandle {
-    commands: mpsc::Sender<ApplicationCommand>
+    commands: Commands
 }
 
 impl PythonApplicationHandle {
@@ -387,6 +404,57 @@ impl PythonApplicationHandle {
     }
 }
 
+/// The way into the application thread: a queue, and a doorbell on the loop.
+///
+/// A command is queued first and the bell rung after, and only when it is
+/// not already ringing: a burst of requests is one byte and one wake-up, and
+/// the loop takes all of them when it answers. The loop clears `armed` before
+/// it looks at the queue, so a command queued after that look rings again.
+///
+/// The writing end lives only here. When the last sender is gone the reading
+/// end sees end-of-file, which is how the loop learns nothing more can come.
+#[derive(Clone)]
+struct Commands {
+    queue: mpsc::Sender<ApplicationCommand>,
+    bell: Arc<UnixStream>,
+    armed: Arc<AtomicBool>
+}
+
+impl Commands {
+    fn send(
+        &self,
+        command: ApplicationCommand
+    ) -> std::result::Result<(), mpsc::SendError<ApplicationCommand>> {
+        self.queue.send(command)?;
+        if !self.armed.swap(true, Ordering::AcqRel) {
+            // Full means a byte is already waiting to be read; either way the
+            // loop wakes.
+            let _ = (&*self.bell).write(&[1]);
+        }
+        Ok(())
+    }
+}
+
+/// The reading side of [`Commands`], held by the application thread.
+struct Doorbell {
+    queue: mpsc::Receiver<ApplicationCommand>,
+    bell: UnixStream,
+    armed: Arc<AtomicBool>
+}
+
+fn commands() -> Result<(Commands, Doorbell)> {
+    let (queue, receiver) = mpsc::channel();
+    let (write, read) = UnixStream::pair().map_err(|error| Error::Python(error.to_string()))?;
+    for end in [&write, &read] {
+        end.set_nonblocking(true).map_err(|error| Error::Python(error.to_string()))?;
+    }
+    let armed = Arc::new(AtomicBool::new(false));
+    Ok((
+        Commands { queue, bell: Arc::new(write), armed: Arc::clone(&armed) },
+        Doorbell { queue: receiver, bell: read, armed }
+    ))
+}
+
 enum ApplicationCommand {
     Http { request: Box<HttpRequest>, response: mpsc::SyncSender<Result<HttpResponse>> },
     Shutdown
@@ -395,7 +463,7 @@ enum ApplicationCommand {
 #[pyclass]
 struct LifespanControl {
     startup: Mutex<Option<mpsc::SyncSender<std::result::Result<(), String>>>>,
-    commands: Mutex<mpsc::Receiver<ApplicationCommand>>
+    doorbell: Mutex<Doorbell>
 }
 
 #[pymethods]
@@ -430,15 +498,40 @@ impl LifespanControl {
         tracing::debug!("🐍 application declines the ASGI lifespan protocol: {detail}");
     }
 
-    fn next_exchange(
-        &self,
-        py: Python<'_>
-    ) -> PyResult<Option<HttpExchange>> {
-        match py.detach(|| self.commands.lock().unwrap().recv()) {
-            Ok(ApplicationCommand::Http { request, response }) => {
-                Ok(Some(HttpExchange::new(*request, response)))
+    /// The descriptor the loop watches for requests.
+    fn doorbell(&self) -> i32 {
+        self.doorbell.lock().unwrap().bell.as_raw_fd()
+    }
+
+    /// Every request waiting, and whether this is the last call: the process
+    /// is shutting down, or nothing can send any more.
+    fn take_exchanges(&self) -> (Vec<HttpExchange>, bool) {
+        let doorbell = self.doorbell.lock().unwrap();
+        let mut rung = [0u8; 64];
+        let mut closed = false;
+        loop {
+            match (&doorbell.bell).read(&mut rung) {
+                Ok(0) => {
+                    closed = true;
+                    break;
+                }
+                Ok(_) => {}
+                Err(_) => break
             }
-            Ok(ApplicationCommand::Shutdown) | Err(_) => Ok(None)
+        }
+        doorbell.armed.store(false, Ordering::SeqCst);
+
+        let mut exchanges = Vec::new();
+        loop {
+            match doorbell.queue.try_recv() {
+                Ok(ApplicationCommand::Http { request, response }) => {
+                    exchanges.push(HttpExchange::new(*request, response));
+                }
+                Ok(ApplicationCommand::Shutdown) | Err(mpsc::TryRecvError::Disconnected) => {
+                    return (exchanges, true);
+                }
+                Err(mpsc::TryRecvError::Empty) => return (exchanges, closed)
+            }
         }
     }
 }
@@ -610,7 +703,7 @@ impl Drop for HttpExchange {
 
 fn run_application(
     definition: PythonApplication,
-    commands: mpsc::Receiver<ApplicationCommand>,
+    doorbell: Doorbell,
     startup: mpsc::SyncSender<std::result::Result<(), String>>
 ) -> Result<()> {
     Python::attach(|py| {
@@ -638,7 +731,7 @@ fn run_application(
 
         let control = Py::new(
             py,
-            LifespanControl { startup: Mutex::new(Some(startup)), commands: Mutex::new(commands) }
+            LifespanControl { startup: Mutex::new(Some(startup)), doorbell: Mutex::new(doorbell) }
         )
         .map_err(|error| python_error(py, error))?;
         let code = CString::new(APPLICATION_DRIVER).expect("application driver has no NUL bytes");
