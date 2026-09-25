@@ -31,8 +31,8 @@ use std::time::Instant;
 use async_trait::async_trait;
 use bytes::Bytes;
 use claviron::orbit::transport::{
-    Exchange, ExchangeReply, FrameKind, TRANSPORT_BUFFER_BYTES, TransportBodies, TransportSegment,
-    frame_kind, parking_supported
+    Endpoint, Exchange, ExchangeReply, FrameKind, Message, TRANSPORT_BUFFER_BYTES, TransportBodies,
+    TransportSegment, frame_kind, parking_supported, read_message, write_message
 };
 use claviron::runtime::{
     AppState, FleetIncarnation, Provider, RunContext, Runnable, ServiceStartPolicy, registry
@@ -43,6 +43,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
+use crate::application::PythonApplicationService;
+use crate::asgi::{HttpRequest, WebSocketDecision, WebSocketSession};
 use crate::routing::{Application, PeerAddrs, RequestScheme};
 
 /// Frames the reader thread may hand over before it has to wait.
@@ -113,6 +115,9 @@ impl Runnable<AppState> for OrbitIngress {
             .registry_ref()
             .resolve::<Application>()
             .ok_or_else(|| registry::Error::msg("no application service is registered"))?;
+        // A WebSocket goes to Python directly: the application's own routes
+        // answer HTTP, and there is no upgrade on this side of the slot.
+        let python = state.registry_ref().resolve::<PythonApplicationService>();
         // The master's count of this worker slot's lives. It stamps the lane
         // and the streams, so a death report that names the process before
         // this one cannot end this one's work.
@@ -155,6 +160,7 @@ impl Runnable<AppState> for OrbitIngress {
                             frame,
                             lane,
                             Arc::clone(&application),
+                            python.clone(),
                             Arc::clone(&segment),
                             Arc::clone(&bodies)
                         ));
@@ -241,6 +247,7 @@ async fn serve(
     frame: Vec<u8>,
     lane: usize,
     application: Arc<Application>,
+    python: Option<Arc<PythonApplicationService>>,
     segment: Arc<TransportSegment>,
     bodies: Arc<TransportBodies>
 ) {
@@ -292,6 +299,11 @@ async fn serve(
         },
         None => None
     };
+
+    if exchange.upgrade {
+        serve_websocket(&exchange, origin, body, python, &segment).await;
+        return;
+    }
 
     let (mut reply_body, request_body) = match body {
         Some(endpoint) => {
@@ -420,6 +432,88 @@ async fn serve(
         arrived.elapsed(),
         if buffered { ", buffered" } else { "" }
     );
+}
+
+/// A WebSocket the edge asked for: ask the application, answer the handshake,
+/// then carry messages both ways as records on the slot until either side
+/// closes.
+async fn serve_websocket(
+    exchange: &Exchange,
+    origin: usize,
+    endpoint: Option<Endpoint>,
+    python: Option<Arc<PythonApplicationService>>,
+    segment: &TransportSegment
+) {
+    let correlation = exchange.correlation;
+    let answer = |status: u16, headers: Vec<(Vec<u8>, Vec<u8>)>| {
+        let reply = ExchangeReply { correlation, status, headers, body: exchange.body };
+        match reply.encode() {
+            Ok(frame) => {
+                if let Err(error) = segment.inbox().write(origin, &frame) {
+                    tracing::debug!(correlation, "🛰 ✗ WebSocket answer was not delivered: {error}");
+                }
+            }
+            Err(error) => tracing::debug!(correlation, "🛰 ✗ WebSocket answer: {error}")
+        }
+    };
+
+    let (Some(endpoint), Some(handle)) = (endpoint, python.and_then(|python| python.handle()))
+    else {
+        answer(503, Vec::new());
+        return;
+    };
+    let request = HttpRequest {
+        method: exchange.method.clone(),
+        scheme: exchange.scheme.clone(),
+        http_version: crate::routing::http_version(exchange.version.into()).to_owned(),
+        path: exchange.path.clone(),
+        raw_path: exchange.raw_path.clone(),
+        query_string: exchange.query.clone(),
+        headers: exchange.headers.clone(),
+        body: Vec::new(),
+        client: exchange.client,
+        server: exchange.server
+    };
+    let Ok(WebSocketSession { decision, inbound, mut outbound }) = handle.handle_websocket(request)
+    else {
+        answer(503, Vec::new());
+        return;
+    };
+    let (mut incoming, mut outgoing) = endpoint.split();
+    let headers = match decision.await {
+        Ok(WebSocketDecision::Accept { headers }) => headers,
+        // Refused, or the application ended first: ASGI's answer is 403.
+        _ => {
+            answer(403, Vec::new());
+            let _ = outgoing.shutdown().await;
+            return;
+        }
+    };
+    answer(101, headers);
+    tracing::debug!(correlation, "🛰 WebSocket accepted");
+
+    // The client's messages to the application. Its end drops the sender, and
+    // the application's next `receive()` reads the disconnect.
+    let from_client = async move {
+        while let Ok(Some(message)) = read_message(&mut incoming).await {
+            let closing = matches!(message, Message::Close { .. });
+            if inbound.send(message).await.is_err() || closing {
+                break;
+            }
+        }
+    };
+    // The application's messages to the client, until it closes or returns.
+    let to_client = async move {
+        while let Some(message) = outbound.recv().await {
+            let closing = matches!(message, Message::Close { .. });
+            if write_message(&mut outgoing, &message).await.is_err() || closing {
+                break;
+            }
+        }
+        let _ = outgoing.shutdown().await;
+    };
+    tokio::join!(from_client, to_client);
+    tracing::debug!(correlation, "🛰 WebSocket ended");
 }
 
 /// Rebuild the request the edge took apart.

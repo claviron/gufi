@@ -12,6 +12,7 @@ use std::thread::{self, JoinHandle};
 
 use bytes::Bytes;
 use claviron::app::invoke::InvocationRouter;
+use claviron::orbit::transport::Message;
 use pyo3::prelude::*;
 use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods, PyList, PyListMethods, PyModule};
 use tokio::sync::{mpsc as chunks, oneshot};
@@ -92,6 +93,64 @@ async def drive_http(application, exchange, state):
         exchange.fail(_exception_text(error))
 
 
+async def drive_websocket(application, socket, state):
+    headers = [(bytes(name), bytes(value)) for name, value in socket.headers]
+    subprotocols = []
+    for name, value in headers:
+        if name.lower() == b"sec-websocket-protocol":
+            subprotocols += [
+                part.strip() for part in value.decode("latin-1").split(",") if part.strip()
+            ]
+    scope = {
+        "type": "websocket",
+        "asgi": {"version": "3.0", "spec_version": "2.4"},
+        "http_version": socket.http_version,
+        "scheme": "wss" if socket.scheme == "https" else "ws",
+        "path": socket.path,
+        "raw_path": bytes(socket.raw_path),
+        "query_string": bytes(socket.query_string),
+        "root_path": "",
+        "headers": headers,
+        "client": socket.client,
+        "server": socket.server,
+        "subprotocols": subprotocols,
+        "state": state.copy(),
+    }
+    connected = False
+
+    async def receive():
+        nonlocal connected
+        if not connected:
+            connected = True
+            return {"type": "websocket.connect"}
+        return await socket.receive()
+
+    async def send(message):
+        kind = message.get("type")
+        if kind == "websocket.accept":
+            socket.accept(
+                message.get("subprotocol"),
+                [(bytes(name), bytes(value)) for name, value in message.get("headers", [])],
+            )
+        elif kind == "websocket.send":
+            waiting = socket.send(message.get("text"), message.get("bytes"))
+            if waiting is not None:
+                await waiting
+        elif kind == "websocket.close":
+            waiting = socket.close(int(message.get("code", 1000)), message.get("reason") or "")
+            if waiting is not None:
+                await waiting
+        else:
+            raise RuntimeError(f"unexpected ASGI websocket message: {kind!r}")
+
+    try:
+        await application(scope, receive, send)
+    except BaseException as error:
+        socket.fail(_exception_text(error))
+    finally:
+        socket.finish()
+
+
 async def drive(application, control):
     incoming = asyncio.Queue()
     outgoing = asyncio.Queue()
@@ -156,7 +215,11 @@ async def drive(application, control):
     def answer():
         exchanges, last = control.take_exchanges()
         for exchange in exchanges:
-            request = loop.create_task(drive_http(application, exchange, state))
+            if exchange.kind == "websocket":
+                work = drive_websocket(application, exchange, state)
+            else:
+                work = drive_http(application, exchange, state)
+            request = loop.create_task(work)
             requests.add(request)
             request.add_done_callback(requests.discard)
         if last and not finished.done():
@@ -466,6 +529,24 @@ impl PythonApplicationHandle {
             .map_err(|_| Error::ApplicationStopped)?;
         response_rx.await.map_err(|_| Error::ResponseChannelClosed)?
     }
+
+    /// Hand a WebSocket to the application. It is answered through the
+    /// session: first `decision`, then messages either way.
+    pub fn handle_websocket(
+        &self,
+        request: HttpRequest
+    ) -> Result<WebSocketSession> {
+        let (decision, decided) = oneshot::channel();
+        // One message in flight each way: the side that is behind makes the
+        // other wait, rather than a buffer growing between them.
+        let (inbound, inbound_rx) = chunks::channel(1);
+        let (outbound_tx, outbound) = chunks::channel(1);
+        let ends = WebSocketEnds { decision, inbound: inbound_rx, outbound: outbound_tx };
+        self.commands
+            .send(ApplicationCommand::WebSocket { request: Box::new(request), ends })
+            .map_err(|_| Error::ApplicationStopped)?;
+        Ok(WebSocketSession { decision: decided, inbound, outbound })
+    }
 }
 
 /// The way into the application thread: a queue, and a doorbell on the loop.
@@ -521,7 +602,36 @@ fn commands() -> Result<(Commands, Doorbell)> {
 
 enum ApplicationCommand {
     Http { request: Box<HttpRequest>, response: oneshot::Sender<Result<HttpResponse>> },
+    WebSocket { request: Box<HttpRequest>, ends: WebSocketEnds },
     Shutdown
+}
+
+/// How the application answered a WebSocket's `websocket.connect`.
+#[derive(Debug)]
+pub enum WebSocketDecision {
+    /// `websocket.accept`: the headers to add to the 101, a chosen
+    /// subprotocol among them.
+    Accept { headers: Vec<(Vec<u8>, Vec<u8>)> },
+    /// `websocket.close` before accepting, or the application ending first:
+    /// the handshake is refused (ASGI says 403).
+    Reject
+}
+
+/// The Rust side of one WebSocket: the answer to the handshake, then messages
+/// both ways until either side closes.
+pub struct WebSocketSession {
+    pub decision: oneshot::Receiver<WebSocketDecision>,
+    /// The client's messages, to the application.
+    pub inbound: chunks::Sender<Message>,
+    /// The application's messages, to the client.
+    pub outbound: chunks::Receiver<Message>
+}
+
+/// The application's side of the same, handed to Python.
+struct WebSocketEnds {
+    decision: oneshot::Sender<WebSocketDecision>,
+    inbound: chunks::Receiver<Message>,
+    outbound: chunks::Sender<Message>
 }
 
 #[pyclass]
@@ -569,7 +679,10 @@ impl LifespanControl {
 
     /// Every request waiting, and whether this is the last call: the process
     /// is shutting down, or nothing can send any more.
-    fn take_exchanges(&self) -> (Vec<HttpExchange>, bool) {
+    fn take_exchanges(
+        &self,
+        py: Python<'_>
+    ) -> PyResult<(Vec<Py<PyAny>>, bool)> {
         let doorbell = self.doorbell.lock().unwrap();
         let mut rung = [0u8; 64];
         let mut closed = false;
@@ -589,12 +702,15 @@ impl LifespanControl {
         loop {
             match doorbell.queue.try_recv() {
                 Ok(ApplicationCommand::Http { request, response }) => {
-                    exchanges.push(HttpExchange::new(*request, response));
+                    exchanges.push(Py::new(py, HttpExchange::new(*request, response))?.into_any());
+                }
+                Ok(ApplicationCommand::WebSocket { request, ends }) => {
+                    exchanges.push(Py::new(py, WebSocketExchange::new(*request, ends))?.into_any());
                 }
                 Ok(ApplicationCommand::Shutdown) | Err(mpsc::TryRecvError::Disconnected) => {
-                    return (exchanges, true);
+                    return Ok((exchanges, true));
                 }
-                Err(mpsc::TryRecvError::Empty) => return (exchanges, closed)
+                Err(mpsc::TryRecvError::Empty) => return Ok((exchanges, closed))
             }
         }
     }
@@ -647,6 +763,11 @@ impl HttpExchange {
 
 #[pymethods]
 impl HttpExchange {
+    #[getter]
+    fn kind(&self) -> &'static str {
+        "http"
+    }
+
     #[getter]
     fn method(&self) -> String {
         self.request.method.clone()
@@ -812,6 +933,206 @@ impl Drop for HttpExchange {
         {
             let _ = rest.try_send(Err(Error::ResponseChannelClosed));
         }
+    }
+}
+
+#[pyclass]
+struct WebSocketExchange {
+    request: HttpRequest,
+    decision: Mutex<Option<oneshot::Sender<WebSocketDecision>>>,
+    inbound: Arc<tokio::sync::Mutex<chunks::Receiver<Message>>>,
+    outbound: Mutex<Option<chunks::Sender<Message>>>
+}
+
+impl WebSocketExchange {
+    fn new(
+        request: HttpRequest,
+        ends: WebSocketEnds
+    ) -> Self {
+        Self {
+            request,
+            decision: Mutex::new(Some(ends.decision)),
+            inbound: Arc::new(tokio::sync::Mutex::new(ends.inbound)),
+            outbound: Mutex::new(Some(ends.outbound))
+        }
+    }
+
+    fn refuse_if_undecided(&self) {
+        if let Some(decision) = self.decision.lock().unwrap().take() {
+            let _ = decision.send(WebSocketDecision::Reject);
+        }
+    }
+}
+
+#[pymethods]
+impl WebSocketExchange {
+    #[getter]
+    fn kind(&self) -> &'static str {
+        "websocket"
+    }
+
+    #[getter]
+    fn scheme(&self) -> String {
+        self.request.scheme.clone()
+    }
+
+    #[getter]
+    fn http_version(&self) -> String {
+        self.request.http_version.clone()
+    }
+
+    #[getter]
+    fn path(&self) -> String {
+        self.request.path.clone()
+    }
+
+    #[getter]
+    fn raw_path(&self) -> Vec<u8> {
+        self.request.raw_path.clone()
+    }
+
+    #[getter]
+    fn query_string(&self) -> Vec<u8> {
+        self.request.query_string.clone()
+    }
+
+    #[getter]
+    fn headers(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
+        self.request.headers.clone()
+    }
+
+    #[getter]
+    fn client(&self) -> Option<(String, u16)> {
+        self.request.client.map(|address| (address.ip().to_string(), address.port()))
+    }
+
+    #[getter]
+    fn server(&self) -> Option<(String, u16)> {
+        self.request.server.map(|address| (address.ip().to_string(), address.port()))
+    }
+
+    /// `websocket.accept`.
+    fn accept(
+        &self,
+        subprotocol: Option<String>,
+        headers: Vec<(Vec<u8>, Vec<u8>)>
+    ) -> PyResult<()> {
+        let Some(decision) = self.decision.lock().unwrap().take() else {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "the WebSocket was already accepted or closed"
+            ));
+        };
+        let mut headers = headers;
+        if let Some(subprotocol) = subprotocol {
+            headers.push((b"sec-websocket-protocol".to_vec(), subprotocol.into_bytes()));
+        }
+        let _ = decision.send(WebSocketDecision::Accept { headers });
+        Ok(())
+    }
+
+    /// The next `websocket.receive`, or `websocket.disconnect` once the client
+    /// is gone. Always awaited.
+    fn receive<'py>(
+        &self,
+        py: Python<'py>
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inbound = Arc::clone(&self.inbound);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let message = inbound.lock().await.recv().await;
+            Python::attach(|py| -> PyResult<Py<PyAny>> {
+                let event = PyDict::new(py);
+                match message {
+                    Some(Message::Text(text)) => {
+                        event.set_item("type", "websocket.receive")?;
+                        event.set_item("text", text)?;
+                    }
+                    Some(Message::Binary(bytes)) => {
+                        event.set_item("type", "websocket.receive")?;
+                        event.set_item("bytes", pyo3::types::PyBytes::new(py, &bytes))?;
+                    }
+                    Some(Message::Close { code, reason }) => {
+                        event.set_item("type", "websocket.disconnect")?;
+                        event.set_item("code", code)?;
+                        event.set_item("reason", reason)?;
+                    }
+                    None => {
+                        event.set_item("type", "websocket.disconnect")?;
+                        event.set_item("code", 1006)?;
+                    }
+                }
+                Ok(event.into_any().unbind())
+            })
+        })
+    }
+
+    /// `websocket.send`. `None` when taken at once, an awaitable when the
+    /// client is behind.
+    fn send<'py>(
+        &self,
+        py: Python<'py>,
+        text: Option<String>,
+        bytes: Option<Vec<u8>>
+    ) -> PyResult<Option<Bound<'py, PyAny>>> {
+        let message = match (text, bytes) {
+            (Some(text), _) => Message::Text(text),
+            (None, Some(bytes)) => Message::Binary(bytes),
+            (None, None) => return Ok(None)
+        };
+        let Some(outbound) = self.outbound.lock().unwrap().clone() else {
+            return Ok(None);
+        };
+        match outbound.try_send(message) {
+            Ok(()) | Err(chunks::error::TrySendError::Closed(_)) => Ok(None),
+            Err(chunks::error::TrySendError::Full(message)) => {
+                pyo3_async_runtimes::tokio::future_into_py(py, async move {
+                    let _ = outbound.send(message).await;
+                    Ok(())
+                })
+                .map(Some)
+            }
+        }
+    }
+
+    /// `websocket.close`: refuses the handshake if it was not accepted yet,
+    /// closes the connection if it was.
+    fn close<'py>(
+        &self,
+        py: Python<'py>,
+        code: u16,
+        reason: String
+    ) -> PyResult<Option<Bound<'py, PyAny>>> {
+        if let Some(decision) = self.decision.lock().unwrap().take() {
+            let _ = decision.send(WebSocketDecision::Reject);
+            return Ok(None);
+        }
+        let Some(outbound) = self.outbound.lock().unwrap().take() else { return Ok(None) };
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let _ = outbound.send(Message::Close { code, reason }).await;
+            Ok(())
+        })
+        .map(Some)
+    }
+
+    /// The application raised: refuse if undecided, and let the edge close
+    /// the connection with 1011 by ending the outbound direction.
+    fn fail(
+        &self,
+        message: String
+    ) {
+        tracing::debug!("🐍 WebSocket application failed: {message}");
+        self.finish();
+    }
+
+    /// The application returned.
+    fn finish(&self) {
+        self.refuse_if_undecided();
+        self.outbound.lock().unwrap().take();
+    }
+}
+
+impl Drop for WebSocketExchange {
+    fn drop(&mut self) {
+        self.refuse_if_undecided();
     }
 }
 

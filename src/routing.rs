@@ -398,7 +398,7 @@ pub(crate) fn text_response(
     response
 }
 
-fn http_version(version: http::Version) -> &'static str {
+pub(crate) fn http_version(version: http::Version) -> &'static str {
     match version {
         http::Version::HTTP_09 => "0.9",
         http::Version::HTTP_10 => "1.0",
