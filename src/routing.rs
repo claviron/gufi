@@ -346,12 +346,11 @@ where
         server: peers.map(|peers| peers.server)
     };
 
-    match tokio::task::spawn_blocking(move || handle.handle_http(scope)).await {
-        Ok(Ok(response)) => response_from_asgi(response.status, response.headers, response.body)
+    match handle.handle_http(scope).await {
+        Ok(response) => response_from_asgi(response.status, response.headers, response.body)
             .unwrap_or_else(|message| {
                 text_response(StatusCode::INTERNAL_SERVER_ERROR, message.to_owned())
             }),
-        Ok(Err(error)) => text_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         Err(error) => text_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
     }
 }

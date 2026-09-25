@@ -29,8 +29,8 @@ fn lifespan_is_started_and_shutdown() {
     running.shutdown().unwrap();
 }
 
-#[test]
-fn http_request_is_dispatched_on_the_application_loop() {
+#[tokio::test]
+async fn http_request_is_dispatched_on_the_application_loop() {
     let directory = tempfile::tempdir().unwrap();
     fs::write(directory.path().join("http_fixture.py"), include_str!("fixtures/lib/http.py"))
         .unwrap();
@@ -54,6 +54,7 @@ fn http_request_is_dispatched_on_the_application_loop() {
             client: None,
             server: None
         })
+        .await
         .unwrap();
     assert_eq!(response.status, 201);
     assert_eq!(response.headers, vec![(b"content-type".to_vec(), b"text/plain".to_vec())]);

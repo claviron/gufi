@@ -13,6 +13,7 @@ use std::thread::{self, JoinHandle};
 use claviron::app::invoke::InvocationRouter;
 use pyo3::prelude::*;
 use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods, PyList, PyListMethods, PyModule};
+use tokio::sync::oneshot;
 
 const APPLICATION_DRIVER: &str = r#"
 import asyncio
@@ -392,15 +393,22 @@ pub struct PythonApplicationHandle {
 }
 
 impl PythonApplicationHandle {
-    pub fn handle_http(
+    /// Hand one request to the application and wait for its answer.
+    ///
+    /// Awaited, not blocked on: the reply comes back on a oneshot the Python
+    /// thread completes, so no thread is held for the length of a request and
+    /// none has to be woken to deliver it. It used to run on a
+    /// `spawn_blocking` thread parked on a channel — one per request in
+    /// flight, and a wake on each side of it.
+    pub async fn handle_http(
         &self,
         request: HttpRequest
     ) -> Result<HttpResponse> {
-        let (response, response_rx) = mpsc::sync_channel(1);
+        let (response, response_rx) = oneshot::channel();
         self.commands
             .send(ApplicationCommand::Http { request: Box::new(request), response })
             .map_err(|_| Error::ApplicationStopped)?;
-        response_rx.recv().map_err(|_| Error::ResponseChannelClosed)?
+        response_rx.await.map_err(|_| Error::ResponseChannelClosed)?
     }
 }
 
@@ -456,7 +464,7 @@ fn commands() -> Result<(Commands, Doorbell)> {
 }
 
 enum ApplicationCommand {
-    Http { request: Box<HttpRequest>, response: mpsc::SyncSender<Result<HttpResponse>> },
+    Http { request: Box<HttpRequest>, response: oneshot::Sender<Result<HttpResponse>> },
     Shutdown
 }
 
@@ -554,7 +562,7 @@ struct HttpExchange {
 }
 
 struct HttpResponseState {
-    sender: Option<mpsc::SyncSender<Result<HttpResponse>>>,
+    sender: Option<oneshot::Sender<Result<HttpResponse>>>,
     status: Option<u16>,
     headers: Vec<(Vec<u8>, Vec<u8>)>,
     body: Vec<u8>
@@ -563,7 +571,7 @@ struct HttpResponseState {
 impl HttpExchange {
     fn new(
         request: HttpRequest,
-        sender: mpsc::SyncSender<Result<HttpResponse>>
+        sender: oneshot::Sender<Result<HttpResponse>>
     ) -> Self {
         Self {
             request,
