@@ -230,7 +230,43 @@ print("OK:", sys.version.split()[0],
     ldd "$python" | grep -q "$PYTHON_DIR/lib/libpython" ||
       die "$python does not load $PYTHON_DIR/lib/libpython$PYTHON_MINOR.so"
   fi
-  log "make a runner's venv from it: uv venv --python $python"
+  print_usage
+}
+
+# What to set once it is installed. Printed, not written into a shell file:
+# which rc file a host reads is the operator's business.
+print_usage() {
+  local python="$PYTHON_DIR/bin/python$PYTHON_MINOR"
+  cat <<EOF
+
+Installed: $python
+
+To use it, add to your shell rc (~/.zshrc or ~/.bashrc):
+
+  # Python — own build, never the distro's
+  export PYTHON_DIR="$PYTHON_DIR"
+  export PATH="\$PYTHON_DIR/bin:\$PATH"
+  export UV_PYTHON="\$PYTHON_DIR/bin/python$PYTHON_MINOR"
+EOF
+  if [[ "$STATIC" != "1" ]]; then
+    cat <<EOF
+  # until gufi runners carry an rpath
+  export LD_LIBRARY_PATH="\$PYTHON_DIR/lib:\$LD_LIBRARY_PATH"
+EOF
+  fi
+  cat <<EOF
+
+Do not set PYTHONHOME: it would hand the system's python3 this stdlib. gufi
+finds the stdlib through the venv's pyvenv.cfg.
+
+Then, in the application:
+
+  uv sync                                   # .venv, made from UV_PYTHON
+  PYO3_PYTHON=\$PWD/.venv/bin/python cargo build --release
+
+A runner built against another Python must be rebuilt: PyO3 links the
+libpython of the interpreter it was built with.
+EOF
 }
 
 dry_run() {
