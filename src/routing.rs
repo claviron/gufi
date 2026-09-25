@@ -20,6 +20,7 @@ use std::task::{Context, Poll};
 use bytes::Bytes;
 use claviron::runtime::{AppState, Provider, registry};
 use http::{Request, Response, StatusCode};
+use http_body_util::combinators::UnsyncBoxBody;
 use http_body_util::{BodyExt, Full};
 use percent_encoding::percent_decode_str;
 use tower_service::Service;
@@ -35,7 +36,23 @@ use crate::asgi::{HttpRequest, PythonApplicationHandle};
 pub type AppRequest = Request<Full<Bytes>>;
 
 /// What the registered service answers with.
-pub type AppResponse = Response<Full<Bytes>>;
+///
+/// The body streams: an application's reply reaches the client as it is
+/// produced — a server-sent event as it is sent — and one that is whole says
+/// its exact size, which is how an ingress knows it can hand it over at once.
+pub type AppResponse = Response<ResponseBody>;
+
+/// A reply body: whatever the application produced, boxed so every ingress
+/// takes one type.
+pub type ResponseBody = UnsyncBoxBody<Bytes, BoxError>;
+
+/// The error a reply body can end with.
+pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+/// A whole body, as a [`ResponseBody`].
+pub fn full_body(bytes: impl Into<Bytes>) -> ResponseBody {
+    Full::new(bytes.into()).map_err(|never| match never {}).boxed_unsync()
+}
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
@@ -121,14 +138,8 @@ where
         let mut service = self.0.clone();
         Box::pin(async move {
             let Ok(response) = service.call(request).await;
-            let (parts, body) = response.into_parts();
-            match body.collect().await {
-                Ok(collected) => Response::from_parts(parts, Full::new(collected.to_bytes())),
-                Err(error) => text_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("response body failed while collecting: {error}")
-                )
-            }
+            response
+                .map(|body| body.map_err(|error| BoxError::from(error.to_string())).boxed_unsync())
         })
     }
 }
@@ -347,10 +358,14 @@ where
     };
 
     match handle.handle_http(scope).await {
-        Ok(response) => response_from_asgi(response.status, response.headers, response.body)
-            .unwrap_or_else(|message| {
-                text_response(StatusCode::INTERNAL_SERVER_ERROR, message.to_owned())
-            }),
+        Ok(response) => response_from_asgi(
+            response.status,
+            response.headers,
+            response.body.map_err(BoxError::from).boxed_unsync()
+        )
+        .unwrap_or_else(|message| {
+            text_response(StatusCode::INTERNAL_SERVER_ERROR, message.to_owned())
+        }),
         Err(error) => text_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
     }
 }
@@ -358,10 +373,10 @@ where
 fn response_from_asgi(
     status: u16,
     headers: Vec<(Vec<u8>, Vec<u8>)>,
-    body: Vec<u8>
+    body: ResponseBody
 ) -> Result<AppResponse, &'static str> {
     let status = StatusCode::from_u16(status).map_err(|_| "invalid ASGI response status")?;
-    let mut response = Response::new(Full::new(Bytes::from(body)));
+    let mut response = Response::new(body);
     *response.status_mut() = status;
     for (name, value) in headers {
         let (Ok(name), Ok(value)) =
@@ -378,7 +393,7 @@ pub(crate) fn text_response(
     status: StatusCode,
     message: String
 ) -> AppResponse {
-    let mut response = Response::new(Full::new(Bytes::from(message)));
+    let mut response = Response::new(full_body(message));
     *response.status_mut() = status;
     response
 }

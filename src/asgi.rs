@@ -10,10 +10,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 
+use bytes::Bytes;
 use claviron::app::invoke::InvocationRouter;
 use pyo3::prelude::*;
 use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods, PyList, PyListMethods, PyModule};
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc as chunks, oneshot};
 
 const APPLICATION_DRIVER: &str = r#"
 import asyncio
@@ -59,7 +60,9 @@ async def drive_http(application, exchange, state):
             return
         if message_type == "http.response.body":
             more_body = bool(message.get("more_body", False))
-            exchange.response_body(bytes(message.get("body", b"")), more_body)
+            waiting = exchange.response_body(bytes(message.get("body", b"")), more_body)
+            if waiting is not None:
+                await waiting
             response_complete = not more_body
             return
         raise RuntimeError(f"unexpected ASGI HTTP message: {message_type!r}")
@@ -239,11 +242,64 @@ pub struct HttpRequest {
     pub server: Option<SocketAddr>
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// A reply's head, delivered with the first part of its body.
+///
+/// Not at `http.response.start`: a head that arrives before any body sends
+/// its reader to wait on a body not yet written, which is a second wake for
+/// every small reply. With the first part in hand, a reply that ends there is
+/// whole and says its size, and one that goes on streams.
+#[derive(Debug)]
 pub struct HttpResponse {
     pub status: u16,
     pub headers: Vec<(Vec<u8>, Vec<u8>)>,
-    pub body: Vec<u8>
+    pub body: ResponseStream
+}
+
+/// A reply body as the application sends it: the first part, then whatever
+/// follows until `more_body` is false.
+#[derive(Debug)]
+pub struct ResponseStream {
+    first: Option<Bytes>,
+    rest: Option<chunks::Receiver<Result<Bytes>>>
+}
+
+impl http_body::Body for ResponseStream {
+    type Data = Bytes;
+    type Error = Error;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Bytes>>>> {
+        use std::task::Poll;
+        if let Some(first) = self.first.take() {
+            return Poll::Ready(Some(Ok(http_body::Frame::data(first))));
+        }
+        let Some(rest) = self.rest.as_mut() else { return Poll::Ready(None) };
+        match rest.poll_recv(cx) {
+            Poll::Ready(Some(part)) => Poll::Ready(Some(part.map(http_body::Frame::data))),
+            Poll::Ready(None) => {
+                self.rest = None;
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.first.is_none() && self.rest.is_none()
+    }
+
+    /// Exact when the reply ended with its first part — the whole body is in
+    /// hand, and an ingress may hand it over before the head.
+    fn size_hint(&self) -> http_body::SizeHint {
+        match &self.rest {
+            None => {
+                http_body::SizeHint::with_exact(self.first.as_ref().map_or(0, |b| b.len() as u64))
+            }
+            Some(_) => http_body::SizeHint::default()
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -562,10 +618,13 @@ struct HttpExchange {
 }
 
 struct HttpResponseState {
+    /// Until the first body part: the head goes with it.
     sender: Option<oneshot::Sender<Result<HttpResponse>>>,
     status: Option<u16>,
     headers: Vec<(Vec<u8>, Vec<u8>)>,
-    body: Vec<u8>
+    /// After it, while `more_body` is true: where the rest goes.
+    rest: Option<chunks::Sender<Result<Bytes>>>,
+    complete: bool
 }
 
 impl HttpExchange {
@@ -579,7 +638,8 @@ impl HttpExchange {
                 sender: Some(sender),
                 status: None,
                 headers: Vec::new(),
-                body: Vec::new()
+                rest: None,
+                complete: false
             })
         }
     }
@@ -648,7 +708,7 @@ impl HttpExchange {
             )));
         }
         let mut response = self.response.lock().unwrap();
-        if response.sender.is_none() {
+        if response.complete {
             return Err(pyo3::exceptions::PyRuntimeError::new_err(
                 "HTTP response is already complete"
             ));
@@ -662,49 +722,95 @@ impl HttpExchange {
         Ok(())
     }
 
-    fn response_body(
+    /// One part of the reply body. Returns `None` when the part was taken at
+    /// once, or an awaitable when the reader is behind: `send()` then waits
+    /// for room, which is how a slow client slows the application rather than
+    /// filling memory.
+    fn response_body<'py>(
         &self,
+        py: Python<'py>,
         body: Vec<u8>,
         more_body: bool
-    ) -> PyResult<()> {
+    ) -> PyResult<Option<Bound<'py, PyAny>>> {
         let mut response = self.response.lock().unwrap();
-        if response.status.is_none() {
+        let Some(status) = response.status else {
             return Err(pyo3::exceptions::PyRuntimeError::new_err(
                 "ASGI application sent a response body before response start"
             ));
-        }
-        if response.sender.is_none() {
+        };
+        if response.complete {
             return Err(pyo3::exceptions::PyRuntimeError::new_err(
                 "HTTP response is already complete"
             ));
         }
-        response.body.extend_from_slice(&body);
-        if !more_body {
-            let sender = response.sender.take().unwrap();
-            let completed = HttpResponse {
-                status: response.status.unwrap(),
-                headers: std::mem::take(&mut response.headers),
-                body: std::mem::take(&mut response.body)
+        response.complete = !more_body;
+        let part = Bytes::from(body);
+
+        // The first part: the head goes with it.
+        if let Some(sender) = response.sender.take() {
+            let rest = if more_body {
+                // One part in flight: the reader takes it before the next is
+                // accepted. Any more would be memory the client has not asked
+                // to spend.
+                let (tx, rx) = chunks::channel(1);
+                response.rest = Some(tx);
+                Some(rx)
+            } else {
+                None
             };
-            let _ = sender.send(Ok(completed));
+            let first = (!part.is_empty()).then_some(part);
+            let _ = sender.send(Ok(HttpResponse {
+                status,
+                headers: std::mem::take(&mut response.headers),
+                body: ResponseStream { first, rest }
+            }));
+            return Ok(None);
         }
-        Ok(())
+
+        // A later part: to the stream the first one opened.
+        let tx = if more_body { response.rest.clone() } else { response.rest.take() };
+        drop(response);
+        let Some(tx) = tx else { return Ok(None) };
+        if part.is_empty() {
+            return Ok(None);
+        }
+        match tx.try_send(Ok(part)) {
+            Ok(()) => Ok(None),
+            // The reader is gone — the client left. Nothing to wait for.
+            Err(chunks::error::TrySendError::Closed(_)) => Ok(None),
+            Err(chunks::error::TrySendError::Full(part)) => {
+                pyo3_async_runtimes::tokio::future_into_py(py, async move {
+                    let _ = tx.send(part).await;
+                    Ok(())
+                })
+                .map(Some)
+            }
+        }
     }
 
     fn fail(
         &self,
         message: String
     ) {
-        if let Some(sender) = self.response.lock().unwrap().sender.take() {
+        let mut response = self.response.lock().unwrap();
+        response.complete = true;
+        if let Some(sender) = response.sender.take() {
             let _ = sender.send(Err(Error::InvalidHttpResponse(message)));
+        } else if let Some(rest) = response.rest.take() {
+            let _ = rest.try_send(Err(Error::InvalidHttpResponse(message)));
         }
     }
 }
 
 impl Drop for HttpExchange {
     fn drop(&mut self) {
-        if let Some(sender) = self.response.lock().unwrap().sender.take() {
+        let mut response = self.response.lock().unwrap();
+        if let Some(sender) = response.sender.take() {
             let _ = sender.send(Err(Error::ResponseChannelClosed));
+        } else if !response.complete
+            && let Some(rest) = response.rest.take()
+        {
+            let _ = rest.try_send(Err(Error::ResponseChannelClosed));
         }
     }
 }

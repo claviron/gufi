@@ -315,9 +315,24 @@ async fn serve(
     };
 
     let (parts, response_body) = application.call(request).await.into_parts();
-    // The application answers whole today (T-20260925-9 streams it), so the
-    // body is in hand before the head goes.
-    let bytes = response_body.collect().await.map_or_else(|_| Bytes::new(), |body| body.to_bytes());
+    // A reply that is whole says its exact size. Taken here, it is in hand
+    // before the head goes; anything else streams after the head.
+    let whole = http_body::Body::size_hint(&response_body)
+        .exact()
+        .is_some_and(|size| size <= TRANSPORT_BUFFER_BYTES as u64);
+    let mut streaming = None;
+    let bytes = if whole {
+        match response_body.collect().await {
+            Ok(body) => body.to_bytes(),
+            Err(error) => {
+                tracing::debug!(correlation, "🛰 ✗ reply body failed: {error}");
+                return;
+            }
+        }
+    } else {
+        streaming = Some(response_body);
+        Bytes::new()
+    };
     let reply = ExchangeReply {
         correlation,
         status: parts.status.as_u16(),
@@ -333,7 +348,7 @@ async fn serve(
     // ended before the head goes, it is waiting when the head wakes the edge,
     // which then never parks on an empty slot. A body larger than the window
     // would wait for a reader not yet told to read, so it follows the head.
-    let buffered = bytes.len() <= TRANSPORT_BUFFER_BYTES;
+    let buffered = whole;
     if buffered && let Some(outgoing) = reply_body.as_mut() {
         if !bytes.is_empty()
             && let Err(error) = outgoing.write_all(&bytes).await
@@ -370,15 +385,29 @@ async fn serve(
     // response the two are nothing alike.
     let answered = arrived.elapsed();
 
-    let sent = bytes.len();
+    let mut sent = bytes.len();
     if buffered {
         // Already written, before the head.
-    } else if let Some(outgoing) = reply_body.as_mut() {
-        if !bytes.is_empty()
-            && let Err(error) = outgoing.write_all(&bytes).await
-        {
-            tracing::debug!(correlation, "🛰 ✗ reply body was cut short: {error}");
-            return;
+    } else if let (Some(outgoing), Some(mut response_body)) = (reply_body.as_mut(), streaming) {
+        // Streamed: each part to the slot as the application sends it, so a
+        // server-sent event reaches the edge when it is produced.
+        while let Some(frame) = response_body.frame().await {
+            let part = match frame {
+                Ok(frame) => match frame.into_data() {
+                    Ok(part) => part,
+                    Err(_) => continue
+                },
+                Err(error) => {
+                    tracing::debug!(correlation, "🛰 ✗ reply body failed: {error}");
+                    let _ = outgoing.reset();
+                    return;
+                }
+            };
+            sent += part.len();
+            if let Err(error) = outgoing.write_all(&part).await {
+                tracing::debug!(correlation, "🛰 ✗ reply body was cut short: {error}");
+                return;
+            }
         }
         if let Err(error) = outgoing.shutdown().await {
             tracing::debug!(correlation, "🛰 ✗ reply body did not close: {error}");

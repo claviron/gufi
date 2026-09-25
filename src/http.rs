@@ -27,7 +27,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bytes::Bytes;
 use claviron::runtime::{AppState, Provider, RunContext, Runnable, ServiceStartPolicy, registry};
 use http::{Request, Response, StatusCode};
 use http_body_util::{BodyExt, Full};
@@ -395,7 +394,7 @@ fn error_response(
     status: StatusCode,
     message: String
 ) -> AppResponse {
-    let mut response = Response::new(Full::new(Bytes::from(message)));
+    let mut response = Response::new(crate::routing::full_body(message));
     *response.status_mut() = status;
     response
 }

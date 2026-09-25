@@ -58,6 +58,7 @@ async fn http_request_is_dispatched_on_the_application_loop() {
         .unwrap();
     assert_eq!(response.status, 201);
     assert_eq!(response.headers, vec![(b"content-type".to_vec(), b"text/plain".to_vec())]);
-    assert_eq!(response.body, b"response");
+    let body = http_body_util::BodyExt::collect(response.body).await.unwrap().to_bytes();
+    assert_eq!(body.as_ref(), b"response");
     running.shutdown().unwrap();
 }
