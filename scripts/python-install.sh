@@ -248,12 +248,6 @@ To use it, add to your shell rc (~/.zshrc or ~/.bashrc):
   export PATH="\$PYTHON_DIR/bin:\$PATH"
   export UV_PYTHON="\$PYTHON_DIR/bin/python$PYTHON_MINOR"
 EOF
-  if [[ "$STATIC" != "1" ]]; then
-    cat <<EOF
-  # until gufi runners carry an rpath
-  export LD_LIBRARY_PATH="\$PYTHON_DIR/lib:\$LD_LIBRARY_PATH"
-EOF
-  fi
   cat <<EOF
 
 Do not set PYTHONHOME: it would hand the system's python3 this stdlib. gufi
