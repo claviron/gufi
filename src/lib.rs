@@ -10,6 +10,7 @@
 pub mod bench;
 
 mod application;
+mod counter;
 pub mod asgi;
 mod http;
 pub(crate) mod options;

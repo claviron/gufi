@@ -421,7 +421,8 @@ pub struct PythonApplication {
     target: ApplicationTarget,
     module_paths: Vec<PathBuf>,
     virtual_environment: Option<PathBuf>,
-    invocations: Option<Arc<InvocationRouter>>
+    invocations: Option<Arc<InvocationRouter>>,
+    counters: Option<Arc<claviron::orbit::Counter>>
 }
 
 impl PythonApplication {
@@ -430,7 +431,8 @@ impl PythonApplication {
             target: ApplicationTarget::parse(target)?,
             module_paths: Vec::new(),
             virtual_environment: None,
-            invocations: None
+            invocations: None,
+            counters: None
         })
     }
 
@@ -459,6 +461,15 @@ impl PythonApplication {
         router: Arc<InvocationRouter>
     ) -> Self {
         self.invocations = Some(router);
+        self
+    }
+
+    /// The fleet's counter table, as `claviron.counter(key)`.
+    pub fn counters(
+        mut self,
+        table: Arc<claviron::orbit::Counter>
+    ) -> Self {
+        self.counters = Some(table);
         self
     }
 
@@ -1283,9 +1294,7 @@ fn run_application(
     Python::attach(|py| {
         configure_python(py, &definition)?;
 
-        if let Some(router) = definition.invocations {
-            install_claviron_module(py, router)?;
-        }
+        install_claviron_module(py, definition.invocations, definition.counters)?;
 
         let module =
             py.import(&definition.target.module).map_err(|error| python_error(py, error))?;
@@ -1368,14 +1377,30 @@ impl PythonInvocationBridge {
 /// answering rather than after whoever assembled the process.
 fn install_claviron_module(
     py: Python<'_>,
-    router: Arc<InvocationRouter>
+    router: Option<Arc<InvocationRouter>>,
+    counters: Option<Arc<claviron::orbit::Counter>>
 ) -> Result<()> {
+    if router.is_none() && counters.is_none() {
+        return Ok(());
+    }
     let module = PyModule::new(py, "claviron").map_err(|error| python_error(py, error))?;
-    let bridge =
-        Py::new(py, PythonInvocationBridge { router }).map_err(|error| python_error(py, error))?;
-    let invoke = bridge.bind(py).getattr("invoke").map_err(|error| python_error(py, error))?;
-    module.add("invoke", invoke).map_err(|error| python_error(py, error))?;
-    module.add("_bridge", bridge).map_err(|error| python_error(py, error))?;
+    if let Some(router) = router {
+        let bridge = Py::new(py, PythonInvocationBridge { router })
+            .map_err(|error| python_error(py, error))?;
+        let invoke = bridge.bind(py).getattr("invoke").map_err(|error| python_error(py, error))?;
+        module.add("invoke", invoke).map_err(|error| python_error(py, error))?;
+        module.add("_bridge", bridge).map_err(|error| python_error(py, error))?;
+    }
+    if let Some(table) = counters {
+        let counters = Py::new(py, crate::counter::Counters::new(table))
+            .map_err(|error| python_error(py, error))?;
+        let counter =
+            counters.bind(py).getattr("counter").map_err(|error| python_error(py, error))?;
+        module.add("counter", counter).map_err(|error| python_error(py, error))?;
+        module
+            .add_class::<crate::counter::PythonCounter>()
+            .map_err(|error| python_error(py, error))?;
+    }
 
     let modules = py
         .import("sys")

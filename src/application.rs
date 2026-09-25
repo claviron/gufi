@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use async_trait::async_trait;
 use claviron::app::invoke::InvocationRouter;
+use claviron::orbit::CounterProvider;
 use claviron::runtime::{AppState, Finalizable, Provider, ProviderOrder, registry};
 
 use crate::asgi::{PythonApplication, PythonApplicationHandle, RunningPythonApplication};
@@ -67,7 +68,7 @@ impl Provider<AppState> for PythonApplicationService {
     /// the first sign is this boot failing on state that had not been
     /// published yet.
     fn order(&self) -> ProviderOrder {
-        ProviderOrder::new().after::<InvocationRouter>()
+        ProviderOrder::new().after::<InvocationRouter>().after::<CounterProvider>()
     }
 
     async fn boot(
@@ -86,11 +87,16 @@ impl Provider<AppState> for PythonApplicationService {
             .resolve::<InvocationRouter>()
             .ok_or_else(|| registry::Error::msg("InvocationRouter is not registered"))?;
 
-        let application = PythonApplication::new(self.target.clone())
+        let mut application = PythonApplication::new(self.target.clone())
             .map_err(|error| registry::Error::msg(error.to_string()))?
             .module_path(&self.application_root)
             .virtual_environment(&self.virtual_environment)
             .invocations(invocations);
+        if let Some(table) =
+            state.registry_ref().resolve::<CounterProvider>().and_then(|provider| provider.handle())
+        {
+            application = application.counters(table);
+        }
 
         let running =
             application.boot().map_err(|error| registry::Error::msg(error.to_string()))?;

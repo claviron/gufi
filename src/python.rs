@@ -474,6 +474,9 @@ impl Runner {
                 state
                     .registry_ref()
                     .insert(Arc::new(PythonApplicationService::new(target, root, venv)))?;
+                // The fleet's keyed counters: `claviron.counter(key)` in
+                // Python, `CounterProvider` in Rust.
+                claviron::orbit::register_counter(state)?;
 
                 // Then the application's own registrations, which may compose
                 // the interpreter behind their routes.
