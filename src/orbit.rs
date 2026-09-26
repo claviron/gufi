@@ -47,6 +47,10 @@ use crate::application::PythonApplicationService;
 use crate::asgi::{HttpRequest, WebSocketDecision, WebSocketSession};
 use crate::routing::{Application, PeerAddrs, RequestScheme};
 
+/// What this process's lane says serves its name. A PHP application given the
+/// same name is refused at its join rather than splitting this one's requests.
+const ASGI_RUNTIME: &str = "asgi";
+
 /// Frames the reader thread may hand over before it has to wait.
 ///
 /// A handoff, not a queue. The loop below spawns each frame on receipt, so
@@ -133,7 +137,7 @@ impl Runnable<AppState> for OrbitIngress {
         );
         let lane = segment
             .inbox()
-            .join(&self.application, incarnation)
+            .join(&self.application, ASGI_RUNTIME, incarnation)
             .map_err(|error| registry::Error::msg(error.to_string()))?;
         let bodies = Arc::new(
             TransportBodies::for_application(&self.application, lane, incarnation)
