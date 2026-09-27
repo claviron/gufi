@@ -560,27 +560,11 @@ impl Runner {
                 let handle = python.handle_cell();
                 #[cfg(feature = "websocket")]
                 let upgrades = crate::websocket::Upgrades::new(python.handle_cell());
-                // A WebSocket over Orbit: the broadcast service is resolved
-                // when one arrives, since Claviron registers it at boot.
-                let sessions_state = state.clone();
+                // A WebSocket over Orbit that is not a broadcast session: the
+                // ASGI application's.
                 let owner = claviron::runner::Owner::new(python).orbit_sessions(
                     move |request, endpoint, handshake| {
-                        #[cfg(feature = "broadcast")]
-                        let broadcast = sessions_state
-                            .registry_ref()
-                            .resolve::<claviron::broadcast::BroadcastService>();
-                        #[cfg(not(feature = "broadcast"))]
-                        let broadcast = {
-                            let _ = &sessions_state;
-                            crate::orbit::BroadcastRoute
-                        };
-                        crate::orbit::session(
-                            request,
-                            endpoint,
-                            handshake,
-                            Arc::clone(&handle),
-                            broadcast
-                        )
+                        crate::orbit::session(request, endpoint, handshake, Arc::clone(&handle))
                     }
                 );
                 #[cfg(feature = "websocket")]

@@ -10,8 +10,8 @@
 
 use std::sync::Arc;
 
+use claviron::broadcast::BroadcastService;
 use claviron::broadcast::protocol::pusher::PublishedEvent;
-use claviron::broadcast::{BroadcastService, BroadcastSession};
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyString};
 
@@ -82,19 +82,4 @@ impl PythonBroadcast {
             .publish(&application, &event)
             .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))
     }
-}
-
-/// A WebSocket that came over Orbit for one of this process's broadcast
-/// applications: its path is `/app/{key}`, as a Pusher client asks. `None`
-/// when it is someone else's — the ASGI application's own WebSocket — and
-/// the refusal's status when it is ours and cannot be served.
-pub(crate) fn accept(
-    service: &BroadcastService,
-    path: &str
-) -> Option<Result<BroadcastSession, u16>> {
-    let key = path.strip_prefix("/app/")?;
-    let (application, _) = service.applications().application_by_key(key)?;
-    Some(
-        service.accept_session(Arc::from(application)).map_err(|refusal| refusal.status().as_u16())
-    )
 }
