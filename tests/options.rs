@@ -2,11 +2,15 @@ use super::*;
 
 fn launch() -> GufiOptions {
     GufiOptions {
-        name: Some("checkout".to_owned()),
-        orbit: true,
-        uds: Some("/run/checkout.sock".into()),
-        h2: true,
-        trusted: vec!["10.0.0.0/8".parse().unwrap(), "::1".parse().unwrap()],
+        runner: RunnerOptions {
+            name: Some("checkout".to_owned()),
+            orbit: true,
+            uds: Some("/run/checkout.sock".into()),
+            h2: true,
+            trusted: vec!["10.0.0.0/8".parse().unwrap(), "::1".parse().unwrap()],
+            ..Default::default()
+        },
+        root: Some("/srv/checkout".into()),
         ..Default::default()
     }
 }
@@ -18,12 +22,13 @@ fn a_launch_survives_the_envelope() {
     let sent = launch();
     let back = GufiOptions::decode(&sent.encode().unwrap()).unwrap();
 
-    assert_eq!(back.name, sent.name);
-    assert_eq!(back.orbit, sent.orbit);
-    assert_eq!(back.uds, sent.uds);
-    assert_eq!(back.h2, sent.h2);
+    assert_eq!(back.runner.name, sent.runner.name);
+    assert_eq!(back.runner.orbit, sent.runner.orbit);
+    assert_eq!(back.runner.uds, sent.runner.uds);
+    assert_eq!(back.root, sent.root);
+    assert_eq!(back.runner.h2, sent.runner.h2);
     assert_eq!(
-        back.trusted.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        back.runner.trusted.iter().map(ToString::to_string).collect::<Vec<_>>(),
         ["10.0.0.0/8", "::1"]
     );
 }
@@ -40,9 +45,12 @@ fn the_same_launch_encodes_the_same_bytes() {
 /// operator typed is what a worker inherits.
 #[test]
 fn a_trusted_network_keeps_its_spelling() {
-    let sent = GufiOptions { trusted: vec!["192.0.2.1".parse().unwrap()], ..Default::default() };
+    let sent = GufiOptions {
+        runner: RunnerOptions { trusted: vec!["192.0.2.1".parse().unwrap()], ..Default::default() },
+        ..Default::default()
+    };
     let back = GufiOptions::decode(&sent.encode().unwrap()).unwrap();
-    assert_eq!(back.trusted[0].to_string(), "192.0.2.1");
+    assert_eq!(back.runner.trusted[0].to_string(), "192.0.2.1");
 }
 
 /// The file is the deployment; the command line is what someone typed over
@@ -58,17 +66,17 @@ fn the_command_line_stands_over_the_file() {
     .expect("write configuration");
 
     let resolved = GufiOptions {
-        uds: Some("/run/typed.sock".into()),
+        runner: RunnerOptions { uds: Some("/run/typed.sock".into()), ..Default::default() },
         config: Some(directory.path().join(super::CONFIG_FILE)),
         ..Default::default()
     }
     .resolve()
     .expect("resolve");
 
-    assert_eq!(resolved.uds.as_deref(), Some(std::path::Path::new("/run/typed.sock")));
+    assert_eq!(resolved.runner.uds.as_deref(), Some(std::path::Path::new("/run/typed.sock")));
     // Untouched by the command line, so the file still decides.
-    assert_eq!(resolved.workers, Some(4));
-    assert!(resolved.orbit);
+    assert_eq!(resolved.runner.workers, Some(4));
+    assert!(resolved.runner.orbit);
 }
 
 /// The directory a repository is checked out into is not always what the
@@ -86,16 +94,16 @@ fn the_file_may_name_the_application() {
     }
     .resolve()
     .expect("resolve");
-    assert_eq!(read.name.as_deref(), Some("written"));
+    assert_eq!(read.runner.name.as_deref(), Some("written"));
 
     let typed = GufiOptions {
-        name: Some("typed".to_owned()),
+        runner: RunnerOptions { name: Some("typed".to_owned()), ..Default::default() },
         config: Some(directory.path().join(super::CONFIG_FILE)),
         ..Default::default()
     }
     .resolve()
     .expect("resolve");
-    assert_eq!(typed.name.as_deref(), Some("typed"));
+    assert_eq!(typed.runner.name.as_deref(), Some("typed"));
 }
 
 /// An application nobody configured runs on its defaults; one whose file was
@@ -106,7 +114,7 @@ fn a_missing_file_is_silent_and_a_named_one_is_not() {
     let resolved = GufiOptions { root: Some(directory.path().to_path_buf()), ..Default::default() }
         .resolve()
         .expect("an application nobody configured still starts");
-    assert_eq!(resolved.workers, None);
+    assert_eq!(resolved.runner.workers, None);
 
     let named =
         GufiOptions { config: Some(directory.path().join("absent.yaml")), ..Default::default() }
@@ -127,7 +135,7 @@ fn resolving_reports_the_file_it_read() {
         .expect("resolve");
 
     assert_eq!(resolved.config.as_deref(), Some(file.as_path()));
-    assert_eq!(resolved.workers, Some(2));
+    assert_eq!(resolved.runner.workers, Some(2));
 }
 
 /// The supervisor's policy rides in the same file and the same envelope, so
@@ -145,12 +153,24 @@ fn the_supervisor_policy_travels_with_the_launch() {
     let resolved = GufiOptions { root: Some(root.path().to_path_buf()), ..Default::default() }
         .resolve()
         .expect("resolve");
-    let policy = resolved.supervisor.clone().expect("the file stated a policy");
+    let policy = resolved.runner.supervisor.clone().expect("the file stated a policy");
     assert_eq!(policy.heartbeat.interval, std::time::Duration::from_secs(2));
 
     let back = GufiOptions::decode(&resolved.encode().expect("encode")).expect("decode");
     assert_eq!(
-        back.supervisor.expect("the envelope carried it").heartbeat.interval,
+        back.runner.supervisor.expect("the envelope carried it").heartbeat.interval,
         std::time::Duration::from_secs(2)
     );
+}
+
+/// gufi's keys and the runner's share one flat file, and a key neither knows
+/// is refused rather than ignored.
+#[test]
+fn a_key_nobody_knows_is_refused() {
+    let read: GufiOptions = serde_yaml::from_str("orbit: true\nvenv: .venv\n").unwrap();
+    assert!(read.runner.orbit);
+    assert_eq!(read.venv.as_deref(), Some(std::path::Path::new(".venv")));
+
+    let typo = serde_yaml::from_str::<GufiOptions>("orbitt: true\n");
+    assert!(typo.is_err(), "a mistyped key is an error");
 }

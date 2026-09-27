@@ -71,7 +71,7 @@ axum = ["claviron/axum"]
 # A command line for the application's own `main` to read. Off by default
 # because argv belongs to the binary, not to a library: the starter kit turns
 # it on where an operator can see the line and delete it.
-cli = ["dep:clap"]
+cli = ["dep:clap", "claviron/runner-cli"]
 # Serving HTTPS on a TCP door, and requiring a client certificate on it. Off
 # by default: most deployments put this process behind something that already
 # terminated TLS.

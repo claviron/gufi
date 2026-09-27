@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use claviron::Server;
 use claviron::http::trust::{Network, Trust};
-use claviron::runner::{Bind, Protocols};
+use claviron::runner::{Bind, Protocols, RunnerOptions};
 use claviron::runtime::{AppState, registry};
 
 use crate::application::PythonApplicationService;
@@ -75,7 +75,10 @@ pub struct Runner {
     #[cfg(feature = "files")]
     files: Option<claviron::runner::files::FilesSource>,
     #[cfg(feature = "watch")]
-    watch: Option<Vec<PathBuf>>
+    watch: Option<Vec<PathBuf>>,
+    /// The request policy and the bounds on work taken, as the launch wrote
+    /// them: the only fields of this that are read.
+    limits: RunnerOptions
 }
 
 impl Runner {
@@ -99,7 +102,8 @@ impl Runner {
             #[cfg(feature = "files")]
             files: None,
             #[cfg(feature = "watch")]
-            watch: None
+            watch: None,
+            limits: RunnerOptions::default()
         }
     }
 
@@ -245,40 +249,20 @@ impl Runner {
         options: crate::GufiOptions
     ) -> Self {
         let crate::GufiOptions {
-            name: named_application,
-            orbit,
-            tcp,
-            uds,
-            h1,
-            h2,
-            trusted,
-            workers,
-            #[cfg(feature = "tls")]
-            tls_cert,
-            #[cfg(feature = "tls")]
-            tls_key,
-            #[cfg(feature = "tls")]
-            tls_client_ca,
+            runner,
             root,
             venv,
             config,
-            supervisor,
             #[cfg(feature = "broadcast")]
-            broadcasting,
-            #[cfg(feature = "files")]
-            files,
-            #[cfg(feature = "watch")]
-            watch,
-            #[cfg(feature = "watch")]
-            watch_paths
+            broadcasting
         } = options;
         #[cfg(feature = "watch")]
-        if watch {
-            self.watch = Some(watch_paths);
+        if runner.watch {
+            self.watch = Some(runner.watch_paths.clone());
         }
         #[cfg(feature = "files")]
-        if files.is_some() {
-            self.files = files;
+        if runner.files.is_some() {
+            self.files = runner.files.clone();
         }
         #[cfg(feature = "broadcast")]
         if let Some(broadcasting) = broadcasting {
@@ -287,36 +271,34 @@ impl Runner {
         if let Some(path) = config {
             self.config_path = Some(path);
         }
-        if let Some(policy) = supervisor {
+        if let Some(policy) = runner.supervisor.clone() {
             self.supervisor = Some(policy);
         }
-        if let Some(name) = named_application {
+        if let Some(name) = runner.name.clone() {
             self.application_name = Some(name);
         }
-        if orbit {
+        if runner.orbit {
             self.orbit = true;
         }
-        if let Some(address) = tcp {
-            self.binds.push(Bind::Tcp(address));
+        self.binds.extend(runner.binds());
+        if runner.h1 || runner.h2 {
+            self.protocols = runner.protocols();
         }
-        if let Some(path) = uds {
-            self.binds.push(Bind::Uds(path));
-        }
-        if h1 || h2 {
-            self.protocols = Protocols::resolve(h1, h2);
-        }
-        self.trusted.extend(trusted);
-        if let Some(workers) = workers {
+        self.trusted.extend(runner.trusted.iter().copied());
+        if let Some(workers) = runner.workers {
             self.workers = workers;
         }
         #[cfg(feature = "tls")]
-        if let (Some(certificate), Some(key)) = (tls_cert, tls_key) {
-            let mut tls = crate::Tls::new(certificate, key);
-            if let Some(authority) = tls_client_ca {
-                tls = tls.client_ca(authority);
-            }
+        if let Some(tls) = runner.tls() {
             self.tls = Some(tls);
         }
+        self.limits = RunnerOptions {
+            max_in_flight: runner.max_in_flight,
+            max_concurrent_requests: runner.max_concurrent_requests,
+            requests: runner.requests,
+            responses: runner.responses,
+            ..RunnerOptions::default()
+        };
         if let Some(root) = root {
             self.application_root = Some(root);
         }
@@ -374,6 +356,9 @@ impl Runner {
         let broadcasting = self.broadcasting.clone();
         #[cfg(feature = "files")]
         let files = self.files.clone();
+        // Read here so a bad policy stops the launch, not the first request.
+        self.limits.policy().map_err(Error::Registry)?;
+        let limits = self.limits.clone();
         // A process with no door would boot an interpreter nothing can reach.
         // The first thing a Python developer runs has no arguments, so that
         // case is a local listener rather than an error.
@@ -395,44 +380,50 @@ impl Runner {
         // started with no command line, so the envelope is how a door asked
         // for here reaches every one of them.
         let launch = crate::GufiOptions {
-            name: Some(application_name.clone()),
-            orbit,
-            tcp: binds.iter().find_map(|bind| match bind {
-                Bind::Tcp(address) => Some(*address),
-                Bind::Uds(_) => None
-            }),
-            uds: binds.iter().find_map(|bind| match bind {
-                Bind::Uds(path) => Some(path.clone()),
-                Bind::Tcp(_) => None
-            }),
-            h1: protocols.h1,
-            h2: protocols.h2,
-            trusted: trusted.clone(),
+            runner: RunnerOptions {
+                name: Some(application_name.clone()),
+                orbit,
+                tcp: binds.iter().find_map(|bind| match bind {
+                    Bind::Tcp(address) => Some(*address),
+                    Bind::Uds(_) => None
+                }),
+                uds: binds.iter().find_map(|bind| match bind {
+                    Bind::Uds(path) => Some(path.clone()),
+                    Bind::Tcp(_) => None
+                }),
+                h1: protocols.h1,
+                h2: protocols.h2,
+                trusted: trusted.clone(),
+                #[cfg(feature = "tls")]
+                tls_cert: tls.as_ref().map(|tls| tls.certificate.clone()),
+                #[cfg(feature = "tls")]
+                tls_key: tls.as_ref().map(|tls| tls.key.clone()),
+                #[cfg(feature = "tls")]
+                tls_client_ca: tls.as_ref().and_then(|tls| tls.client_ca.clone()),
+                // Carried: every worker is held to the same written policy.
+                max_in_flight: limits.max_in_flight,
+                max_concurrent_requests: limits.max_concurrent_requests,
+                requests: limits.requests.clone(),
+                responses: limits.responses.clone(),
+                #[cfg(feature = "files")]
+                files: files.clone(),
+                // Not carried: a worker does not start workers.
+                workers: None,
+                // Carried: a worker registers the same policy source its
+                // master did, so the fleet is supervised by one written-down
+                // decision.
+                supervisor: Some(supervisor.clone()),
+                // Not carried: the master watches, a worker is what it
+                // restarts.
+                ..RunnerOptions::default()
+            },
             root: Some(application_root.clone()),
             venv: Some(virtual_environment.clone()),
-            #[cfg(feature = "tls")]
-            tls_cert: tls.as_ref().map(|tls| tls.certificate.clone()),
-            #[cfg(feature = "tls")]
-            tls_key: tls.as_ref().map(|tls| tls.key.clone()),
-            #[cfg(feature = "tls")]
-            tls_client_ca: tls.as_ref().and_then(|tls| tls.client_ca.clone()),
-            // Not carried: a worker does not start workers.
-            workers: None,
             // Not carried: a worker did not read a file, it was handed the
             // result of one.
             config: None,
-            // Carried: a worker registers the same policy source its master
-            // did, so the fleet is supervised by one written-down decision.
-            supervisor: Some(supervisor.clone()),
             #[cfg(feature = "broadcast")]
-            broadcasting: Some(broadcasting.clone()),
-            #[cfg(feature = "files")]
-            files: files.clone(),
-            // Not carried: the master watches, a worker is what it restarts.
-            #[cfg(feature = "watch")]
-            watch: false,
-            #[cfg(feature = "watch")]
-            watch_paths: Vec::new()
+            broadcasting: Some(broadcasting.clone())
         }
         .encode()
         .map_err(Error::Registry)?;
@@ -512,9 +503,14 @@ impl Runner {
                 };
                 #[cfg(feature = "files")]
                 let files = match inherited.as_ref() {
-                    Some(options) => options.files.clone(),
+                    Some(options) => options.runner.files.clone(),
                     None => files.clone()
                 };
+                let limits = match inherited.as_ref() {
+                    Some(options) => options.runner.clone(),
+                    None => limits.clone()
+                };
+                let policy = limits.policy().map_err(registry::Error::msg)?;
                 let (orbit, binds, protocols, trusted, application_name, root, venv) =
                     match inherited {
                         None => (
@@ -528,18 +524,13 @@ impl Runner {
                         ),
                         Some(options) => {
                             let mut doors = Vec::new();
-                            if let Some(address) = options.tcp {
-                                doors.push(Bind::Tcp(address));
-                            }
-                            if let Some(path) = options.uds.clone() {
-                                doors.push(Bind::Uds(path));
-                            }
+                            doors.extend(options.runner.binds());
                             (
-                                options.orbit,
+                                options.runner.orbit,
                                 doors,
-                                Protocols::resolve(options.h1, options.h2),
-                                options.trusted.clone(),
-                                options.name.clone().unwrap_or(application_name),
+                                options.runner.protocols(),
+                                options.runner.trusted.clone(),
+                                options.runner.name.clone().unwrap_or(application_name),
                                 options.root.clone().unwrap_or(application_root),
                                 options.venv.clone().unwrap_or(virtual_environment)
                             )
@@ -596,13 +587,10 @@ impl Runner {
                 let owner = owner.upgrades(upgrades);
                 claviron::runner::register_owner(state, owner)?;
                 state.registry_ref().insert(application)?;
-                // What stands in front of the routes. No request policy is
-                // configurable here yet, so none is applied, stated rather than
-                // left to a default; nor a bound on concurrent requests.
-                let routing = claviron::runner::Routing::new(
-                    claviron::http::policy::HttpPolicy::unlimited(),
-                    None
-                );
+                // What stands in front of the routes: the written policy, and
+                // the bound on requests admitted at once.
+                let routing =
+                    claviron::runner::Routing::new(policy, limits.max_concurrent_requests);
                 #[cfg(feature = "files")]
                 let routing = routing.files(files);
                 state.registry_ref().insert(Arc::new(routing))?;
@@ -624,9 +612,7 @@ impl Runner {
                     state.registry_ref().insert(Arc::new(claviron::runner::OrbitIngress::new(
                         application_name,
                         crate::orbit::ASGI_RUNTIME,
-                        // No bound yet on exchanges taken and not answered;
-                        // work waits in the lane, where the edge sees it.
-                        None
+                        limits.max_in_flight
                     )))?;
                 }
                 // The launch's answer, unless `configure` already registered a

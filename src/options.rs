@@ -84,15 +84,17 @@
 //! precedence, so a deployment can accept the command line and still pin one
 //! value itself.
 
-use std::net::SocketAddr;
 use std::path::PathBuf;
+
+pub use claviron::runner::RunnerOptions;
 
 /// Options for a launch.
 ///
-/// Every field is optional; an unset field keeps the runner's default. See
-/// the [module documentation](self) for examples.
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
-#[serde(default, deny_unknown_fields)]
+/// Every field is optional; an unset field keeps the runner's default. What
+/// every Claviron runner's launch says alike is [`RunnerOptions`], flat in the
+/// same file beside gufi's own keys. See the [module documentation](self) for
+/// examples.
+#[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "cli", derive(clap::Parser))]
 #[cfg_attr(
     feature = "cli",
@@ -103,60 +105,10 @@ use std::path::PathBuf;
     )
 )]
 pub struct GufiOptions {
-    /// What this application is called. The edge routes to it.
-    ///
-    /// Defaults to the name of the application root, which for a Python
-    /// application is the directory its scripts and `.venv` are in. State it
-    /// when the two differ — a directory named for the repository serving an
-    /// application named for what it does.
-    #[cfg_attr(feature = "cli", arg(short, long))]
-    pub name: Option<String>,
-
-    /// Answer through this application's fleet, over shared memory.
-    #[cfg_attr(feature = "cli", arg(long))]
-    pub orbit: bool,
-
-    /// Answer on TCP. Without an address, on localhost port 8000.
-    #[cfg_attr(
-        feature = "cli",
-        arg(long, num_args = 0..=1, default_missing_value = "127.0.0.1:8000")
-    )]
-    pub tcp: Option<SocketAddr>,
-
-    /// Answer on a Unix socket at this path.
-    #[cfg_attr(feature = "cli", arg(long))]
-    pub uds: Option<PathBuf>,
-
-    /// Accept HTTP/1 on the sockets. Naming neither version accepts both.
-    #[cfg_attr(feature = "cli", arg(long))]
-    pub h1: bool,
-
-    /// Accept HTTP/2 on the sockets, cleartext or otherwise.
-    #[cfg_attr(feature = "cli", arg(long))]
-    pub h2: bool,
-
-    /// Peers whose forwarding headers to believe: an address or a CIDR,
-    /// repeatable. Nobody, unless stated.
-    /// Carried as the text it was written as, so encoding a launch and
-    /// reading it back yields what the operator typed.
-    #[cfg_attr(feature = "cli", arg(long = "trusted"))]
-    #[serde(with = "networks")]
-    pub trusted: Vec<claviron::http::trust::Network>,
-
-    /// Serve HTTPS on the TCP door with this certificate chain.
-    #[cfg(feature = "tls")]
-    #[cfg_attr(feature = "cli", arg(long, requires = "tls_key"))]
-    pub tls_cert: Option<PathBuf>,
-
-    /// The private key for `--tls-cert`.
-    #[cfg(feature = "tls")]
-    #[cfg_attr(feature = "cli", arg(long, requires = "tls_cert"))]
-    pub tls_key: Option<PathBuf>,
-
-    /// Require a client certificate signed by this authority.
-    #[cfg(feature = "tls")]
-    #[cfg_attr(feature = "cli", arg(long, requires = "tls_cert"))]
-    pub tls_client_ca: Option<PathBuf>,
+    /// The name, doors, trust, request policy, static mounts, watching and
+    /// workers.
+    #[cfg_attr(feature = "cli", command(flatten))]
+    pub runner: RunnerOptions,
 
     /// The application root. Defaults to the working directory.
     #[cfg_attr(feature = "cli", arg(long))]
@@ -167,39 +119,11 @@ pub struct GufiOptions {
     pub venv: Option<PathBuf>,
 
     /// Broadcasting in this process: the application `claviron.broadcast`
-    /// publishes to, and later Django Channels' layer. Written in the file
-    /// only; the applications' ids, keys and secrets are `broadcast.yaml`.
+    /// publishes to, and Django Channels' layer. Written in the file only;
+    /// the applications' ids, keys and secrets are `broadcast.yaml`.
     #[cfg(feature = "broadcast")]
     #[cfg_attr(feature = "cli", arg(skip))]
     pub broadcasting: Option<Broadcasting>,
-
-    /// Static mounts served before the application, for a process no edge
-    /// stands in front of. Written in the file only.
-    #[cfg(feature = "files")]
-    #[cfg_attr(feature = "cli", arg(skip))]
-    pub files: Option<claviron::runner::files::FilesSource>,
-
-    /// Restart the workers when the application's Python changes: a rolling
-    /// restart, requested by the master. Development only; needs two or more
-    /// `workers`.
-    #[cfg(feature = "watch")]
-    #[cfg_attr(feature = "cli", arg(long))]
-    pub watch: bool,
-
-    /// What to watch, relative to the root. Unwritten, every directory of
-    /// the root but the virtual environment, build output, storage and
-    /// public files, and the root's own `.py` files.
-    #[cfg(feature = "watch")]
-    #[cfg_attr(feature = "cli", arg(long = "watch-path"))]
-    pub watch_paths: Vec<PathBuf>,
-
-    /// How many worker processes serve this application. Zero is standalone.
-    ///
-    /// Each worker is a process with an interpreter of its own, which is how
-    /// Python scales — one interpreter runs one thread of bytecode at a time.
-    /// The master serves no traffic: it holds no lane and binds no socket.
-    #[cfg_attr(feature = "cli", arg(short, long))]
-    pub workers: Option<u8>,
 
     /// Where this deployment is written down. Defaults to [`CONFIG_FILE`]
     /// beside the application.
@@ -208,18 +132,60 @@ pub struct GufiOptions {
     /// from — so it is neither written into the file nor carried to a
     /// worker, which is handed the resolved launch instead.
     #[cfg_attr(feature = "cli", arg(short, long))]
-    #[serde(skip)]
-    pub config: Option<PathBuf>,
+    pub config: Option<PathBuf>
+}
 
-    /// How the worker fleet is supervised: rotation, recovery, heartbeat,
-    /// and the deadlines a restart runs on.
-    ///
-    /// Only consulted when `workers` asks for a fleet, and every field has a
-    /// built-in value, so most deployments leave the whole section out.
-    /// Written here rather than in a `supervisor.yaml` of its own because
-    /// one application is one file.
-    #[cfg_attr(feature = "cli", arg(skip))]
-    pub supervisor: Option<claviron::supervisor::SupervisorConfig>
+/// gufi's own keys, beside the runner's in the same flat file.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct Own {
+    root: Option<PathBuf>,
+    venv: Option<PathBuf>,
+    #[cfg(feature = "broadcast")]
+    broadcasting: Option<Broadcasting>
+}
+
+impl serde::Serialize for GufiOptions {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S
+    ) -> Result<S::Ok, S::Error> {
+        use serde::ser::Error;
+        let own = Own {
+            root: self.root.clone(),
+            venv: self.venv.clone(),
+            #[cfg(feature = "broadcast")]
+            broadcasting: self.broadcasting.clone()
+        };
+        let shared = serde_yaml::to_value(&self.runner).map_err(S::Error::custom)?;
+        let own = serde_yaml::to_value(&own).map_err(S::Error::custom)?;
+        claviron::runner::options::merge(shared, own).serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for GufiOptions {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let file = serde_yaml::Value::deserialize(deserializer)?;
+        let (shared, own) = claviron::runner::options::split(file).map_err(D::Error::custom)?;
+        let runner: RunnerOptions = serde_yaml::from_value(shared).map_err(D::Error::custom)?;
+        // A key neither side knows lands here; the list of what is known is
+        // both halves, or the message would point away from the fix.
+        let own: Own = serde_yaml::from_value(own).map_err(|error| {
+            D::Error::custom(format!(
+                "{error}, or one of the runner's: {}",
+                RunnerOptions::KEYS.join(", ")
+            ))
+        })?;
+        Ok(Self {
+            runner,
+            root: own.root,
+            venv: own.venv,
+            #[cfg(feature = "broadcast")]
+            broadcasting: own.broadcasting,
+            config: None
+        })
+    }
 }
 
 /// The `broadcasting:` section of the launch.
@@ -333,52 +299,23 @@ impl GufiOptions {
         let written: Self = serde_yaml::from_str(&text)
             .map_err(|error| format!("parse {}: {error}", path.display()))?;
         let mut resolved = self.over(written);
-        #[cfg(feature = "files")]
-        if let Some(files) = &resolved.files {
-            files.parse().map_err(|error| format!("{}: {error}", path.display()))?;
-        }
+        resolved.runner.validate().map_err(|error| format!("{}: {error}", path.display()))?;
         resolved.config = Some(path);
         Ok(resolved)
     }
 
-    /// These options over those, field by field.
+    /// These options over those, field by field: the command line wins
+    /// wherever it said anything.
     fn over(
         self,
         written: Self
     ) -> Self {
         Self {
-            name: self.name.or(written.name),
-            orbit: self.orbit || written.orbit,
-            tcp: self.tcp.or(written.tcp),
-            uds: self.uds.or(written.uds),
-            h1: self.h1 || written.h1,
-            h2: self.h2 || written.h2,
-            // Stated rather than merged: a list of peers to believe is one
-            // decision, and a command line that names any is the whole of it.
-            trusted: if self.trusted.is_empty() { written.trusted } else { self.trusted },
-            #[cfg(feature = "tls")]
-            tls_cert: self.tls_cert.or(written.tls_cert),
-            #[cfg(feature = "tls")]
-            tls_key: self.tls_key.or(written.tls_key),
-            #[cfg(feature = "tls")]
-            tls_client_ca: self.tls_client_ca.or(written.tls_client_ca),
+            runner: self.runner.over(written.runner),
             root: self.root.or(written.root),
             venv: self.venv.or(written.venv),
-            workers: self.workers.or(written.workers),
             #[cfg(feature = "broadcast")]
             broadcasting: self.broadcasting.or(written.broadcasting),
-            #[cfg(feature = "files")]
-            files: self.files.or(written.files),
-            #[cfg(feature = "watch")]
-            watch: self.watch || written.watch,
-            #[cfg(feature = "watch")]
-            watch_paths: if self.watch_paths.is_empty() {
-                written.watch_paths
-            } else {
-                self.watch_paths
-            },
-            // Policy is written down, never typed: no flag can have stated it.
-            supervisor: written.supervisor,
             config: self.config
         }
     }
@@ -410,29 +347,6 @@ impl GufiOptions {
 /// directory, one virtual environment, one name.
 pub(crate) fn default_name(root: &std::path::Path) -> Option<String> {
     root.file_name()?.to_str().filter(|name| !name.is_empty()).map(ToOwned::to_owned)
-}
-
-/// `Network` is parsed from text and prints back to it; carrying the text is
-/// both smaller and closer to what was meant than carrying the parsed halves.
-mod networks {
-    use claviron::http::trust::Network;
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub(super) fn serialize<S: Serializer>(
-        networks: &[Network],
-        serializer: S
-    ) -> Result<S::Ok, S::Error> {
-        serializer.collect_seq(networks.iter().map(ToString::to_string))
-    }
-
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D
-    ) -> Result<Vec<Network>, D::Error> {
-        Vec::<String>::deserialize(deserializer)?
-            .into_iter()
-            .map(|text| text.parse().map_err(serde::de::Error::custom))
-            .collect()
-    }
 }
 
 #[cfg(test)]
