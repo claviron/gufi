@@ -11,29 +11,6 @@ use crate::application::PythonApplicationService;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// The supervisor's policy, as this launch wrote it down.
-///
-/// Claviron would otherwise read a `supervisor.yaml` of its own from the
-/// config dir. One application is one file, so gufi hands the policy over
-/// instead and that file is never looked for. Every field has a built-in
-/// value, which is why an application that asks for workers and says nothing
-/// else still starts.
-struct SupervisorPolicy(claviron::supervisor::SupervisorConfig);
-
-impl claviron::runtime::Provider<AppState> for SupervisorPolicy {
-    fn name(&self) -> &'static str {
-        "GufiSupervisorPolicy"
-    }
-}
-
-impl claviron::supervisor::SupervisorConfigSource for SupervisorPolicy {
-    fn supervisor_config(
-        &self
-    ) -> std::result::Result<claviron::supervisor::SupervisorConfig, String> {
-        Ok(self.0.clone())
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
@@ -448,12 +425,7 @@ impl Runner {
                 // interpreter resolves it at boot.
                 // Before the application's own registrations, because the
                 // supervisor boots early and must find it there.
-                state.registry_ref().insert(Arc::new(SupervisorPolicy(supervisor.clone())))?;
-                state
-                    .registry_ref()
-                    .bind_dyn::<dyn claviron::supervisor::SupervisorConfigSource, SupervisorPolicy>(
-                        |source| source
-                    )?;
+                claviron::runner::supervisor::register_policy(state, supervisor.clone())?;
 
                 // The master watches the source and restarts its workers; the
                 // workers are what it restarts, so they do not watch.
