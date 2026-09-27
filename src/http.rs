@@ -131,7 +131,7 @@ pub(crate) struct Server {
     /// than through the application's routes.
     python: Option<crate::asgi::PythonApplicationHandle>,
     #[cfg(feature = "tls")]
-    acceptor: Option<tokio_rustls::TlsAcceptor>
+    acceptor: Option<claviron::runner::tls::TlsAcceptor>
 }
 
 impl Server {
@@ -174,7 +174,7 @@ impl Server {
     #[cfg(feature = "tls")]
     pub(crate) fn with_tls(
         mut self,
-        acceptor: Option<tokio_rustls::TlsAcceptor>
+        acceptor: Option<claviron::runner::tls::TlsAcceptor>
     ) -> Self {
         if matches!(self.bind, Bind::Tcp(_)) {
             self.acceptor = acceptor;
