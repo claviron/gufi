@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use claviron::Server;
 use claviron::http::trust::{Network, Trust};
+use claviron::runner::{Bind, Protocols};
 use claviron::runtime::{AppState, registry};
 
 use crate::application::PythonApplicationService;
-use crate::http::{Bind, HttpIngress, Protocols};
 use crate::orbit::OrbitIngress;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -566,10 +566,13 @@ impl Runner {
                     broadcasting
                 ));
                 // The owner: whatever the application's routes do not claim.
-                claviron::runner::register_owner(
-                    state,
-                    claviron::runner::Owner::new(application.service())
-                )?;
+                let python = application.service();
+                #[cfg(feature = "websocket")]
+                let upgrades = crate::websocket::Upgrades::new(python.handle_cell());
+                let owner = claviron::runner::Owner::new(python);
+                #[cfg(feature = "websocket")]
+                let owner = owner.upgrades(upgrades);
+                claviron::runner::register_owner(state, owner)?;
                 state.registry_ref().insert(application)?;
                 // What stands in front of the routes. No request policy is
                 // configurable here yet, so none is applied, stated rather than
@@ -605,12 +608,10 @@ impl Runner {
                     state.registry_ref().insert(Arc::new(Trust::new(trusted)))?;
                 }
                 if !binds.is_empty() {
-                    state.registry_ref().insert(Arc::new(HttpIngress::new(
-                        binds,
-                        protocols,
-                        #[cfg(feature = "tls")]
-                        tls
-                    )))?;
+                    let ingress = claviron::runner::SocketIngress::new(binds, protocols);
+                    #[cfg(feature = "tls")]
+                    let ingress = ingress.tls(tls);
+                    state.registry_ref().insert(Arc::new(ingress))?;
                 }
                 Ok(())
             })

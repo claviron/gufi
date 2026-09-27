@@ -102,6 +102,13 @@ pub struct PythonService {
 }
 
 impl PythonService {
+    /// The interpreter's handle as it will be once booted, for a stage that
+    /// reaches Python outside the HTTP exchange — a WebSocket.
+    #[cfg(feature = "websocket")]
+    pub(crate) fn handle_cell(&self) -> Arc<OnceLock<PythonApplicationHandle>> {
+        Arc::clone(&self.handle)
+    }
+
     pub(crate) fn new(handle: Arc<OnceLock<PythonApplicationHandle>>) -> Self {
         Self { handle }
     }
@@ -166,12 +173,28 @@ where
     B: http_body::Body<Data = Bytes> + Send + 'static,
     B::Error: std::fmt::Display
 {
-    // Where it came from, read the way every owner reads it: a trusted hop's
-    // word first, the accepted connection's otherwise.
-    let origin = claviron::http::trust::Origin::of(request.extensions());
     let (parts, body) = request.into_parts();
     let body = body.map_err(|error| BoxError::from(error.to_string()));
+    let scope = scope(&parts);
 
+    match handle.handle_http(scope, body).await {
+        Ok(response) => response_from_asgi(
+            response.status,
+            response.headers,
+            response.body.map_err(BoxError::from).boxed_unsync()
+        )
+        .unwrap_or_else(|message| {
+            text_response(StatusCode::INTERNAL_SERVER_ERROR, message.to_owned())
+        }),
+        Err(error) => text_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+    }
+}
+
+/// The ASGI scope of a request, HTTP or WebSocket alike. Where it came from is
+/// read the way every owner reads it: a trusted hop's word first, the accepted
+/// connection's otherwise.
+pub(crate) fn scope(parts: &http::request::Parts) -> HttpRequest {
+    let origin = claviron::http::trust::Origin::of(&parts.extensions);
     // A plain listener is `http`, which is what an unknown scheme reports.
     let scheme = origin
         .scheme
@@ -180,7 +203,7 @@ where
         .or(parts.uri.scheme_str())
         .unwrap_or("http")
         .to_owned();
-    let scope = HttpRequest {
+    HttpRequest {
         method: parts.method.as_str().to_owned(),
         scheme,
         http_version: http_version(parts.version).to_owned(),
@@ -194,18 +217,6 @@ where
             .collect(),
         client: origin.client,
         server: origin.server
-    };
-
-    match handle.handle_http(scope, body).await {
-        Ok(response) => response_from_asgi(
-            response.status,
-            response.headers,
-            response.body.map_err(BoxError::from).boxed_unsync()
-        )
-        .unwrap_or_else(|message| {
-            text_response(StatusCode::INTERNAL_SERVER_ERROR, message.to_owned())
-        }),
-        Err(error) => text_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
     }
 }
 

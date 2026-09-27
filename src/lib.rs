@@ -16,7 +16,6 @@ mod broadcast;
 mod counter;
 #[cfg(feature = "django")]
 mod django;
-mod http;
 #[cfg(feature = "log")]
 mod log;
 pub(crate) mod options;
@@ -40,8 +39,7 @@ pub use claviron::http::trust::Trust;
 pub use claviron::runner::Tls;
 #[cfg(feature = "files")]
 pub use claviron::runner::files::FilesSource;
-pub use claviron::runner::{Owner, register_router_with};
-pub use http::{Bind, Protocols};
+pub use claviron::runner::{Bind, Owner, Protocols, register_router_with};
 #[cfg(feature = "broadcast")]
 pub use options::Broadcasting;
 #[cfg(feature = "django")]

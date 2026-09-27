@@ -6,27 +6,73 @@
 //! [`Message`]s, so neither a Python nor a Rust handler knows which door the
 //! socket came through.
 
+use std::convert::Infallible;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, OnceLock};
+use std::task::{Context, Poll};
+
 use bytes::Bytes;
 pub use claviron::orbit::transport::Message;
 pub use fastwebsockets;
 use fastwebsockets::{FragmentCollector, Frame, OpCode, Payload, WebSocket};
 use http::{Request, StatusCode};
-use hyper::body::Incoming;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 
 use crate::asgi::{HttpRequest, PythonApplicationHandle, WebSocketDecision, WebSocketSession};
-use crate::routing::{AppResponse, full_body};
+use crate::routing::{AppRequest, AppResponse, full_body};
 
-/// Whether a request asks to become a WebSocket.
-pub(crate) fn is_upgrade(request: &Request<Incoming>) -> bool {
-    fastwebsockets::upgrade::is_upgrade_request(request)
+/// The owner's answer to a request asking to take its connection over: a
+/// WebSocket goes to the application, anything else is not one this serves.
+#[derive(Clone)]
+pub(crate) struct Upgrades {
+    python: Arc<OnceLock<PythonApplicationHandle>>
+}
+
+impl Upgrades {
+    pub(crate) fn new(python: Arc<OnceLock<PythonApplicationHandle>>) -> Self {
+        Self { python }
+    }
+}
+
+impl tower_service::Service<AppRequest> for Upgrades {
+    type Response = AppResponse;
+    type Error = Infallible;
+    type Future = Pin<Box<dyn Future<Output = Result<AppResponse, Infallible>> + Send>>;
+
+    fn poll_ready(
+        &mut self,
+        _: &mut Context<'_>
+    ) -> Poll<Result<(), Infallible>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(
+        &mut self,
+        request: AppRequest
+    ) -> Self::Future {
+        let python = self.python.get().cloned();
+        Box::pin(async move {
+            if !fastwebsockets::upgrade::is_upgrade_request(&request) {
+                return Ok(status(StatusCode::NOT_IMPLEMENTED));
+            }
+            let Some(python) = python else {
+                return Ok(status(StatusCode::SERVICE_UNAVAILABLE));
+            };
+            let (parts, body) = request.into_parts();
+            let mut scope = crate::routing::scope(&parts);
+            // The handshake is HTTP/1.1 whatever the connection negotiated.
+            scope.http_version = "1.1".to_owned();
+            Ok(serve(Request::from_parts(parts, body), scope, &python).await)
+        })
+    }
 }
 
 /// Ask the application, answer the handshake, and serve the socket on a task
 /// of its own once the connection is upgraded.
-pub(crate) async fn serve(
-    mut request: Request<Incoming>,
+async fn serve(
+    mut request: AppRequest,
     scope: HttpRequest,
     python: &PythonApplicationHandle
 ) -> AppResponse {
