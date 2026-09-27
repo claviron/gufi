@@ -43,6 +43,8 @@ pub enum Error {
     CurrentDirectory(#[source] std::io::Error),
     #[error("application working directory has no name")]
     MissingApplicationName,
+    #[error("watch rolls the workers over one at a time: set workers to 2 or more")]
+    WatchWithoutWorkers,
     #[error(transparent)]
     Claviron(#[from] claviron::Error),
     #[error("registration failed: {0}")]
@@ -72,7 +74,9 @@ pub struct Runner {
     #[cfg(feature = "broadcast")]
     broadcasting: crate::options::Broadcasting,
     #[cfg(feature = "files")]
-    files: Option<crate::files::FilesSource>
+    files: Option<crate::files::FilesSource>,
+    #[cfg(feature = "watch")]
+    watch: Option<Vec<PathBuf>>
 }
 
 impl Runner {
@@ -94,7 +98,9 @@ impl Runner {
             #[cfg(feature = "broadcast")]
             broadcasting: crate::options::Broadcasting::default(),
             #[cfg(feature = "files")]
-            files: None
+            files: None,
+            #[cfg(feature = "watch")]
+            watch: None
         }
     }
 
@@ -261,8 +267,16 @@ impl Runner {
             #[cfg(feature = "broadcast")]
             broadcasting,
             #[cfg(feature = "files")]
-            files
+            files,
+            #[cfg(feature = "watch")]
+            watch,
+            #[cfg(feature = "watch")]
+            watch_paths
         } = options;
+        #[cfg(feature = "watch")]
+        if watch {
+            self.watch = Some(watch_paths);
+        }
         #[cfg(feature = "files")]
         if files.is_some() {
             self.files = files;
@@ -351,6 +365,12 @@ impl Runner {
         let tls = self.tls;
         let orbit = self.orbit;
         let workers = self.workers;
+        #[cfg(feature = "watch")]
+        let watch = self.watch.clone();
+        #[cfg(feature = "watch")]
+        if watch.is_some() && workers < 2 {
+            return Err(Error::WatchWithoutWorkers);
+        }
         #[cfg(feature = "broadcast")]
         let broadcasting = self.broadcasting.clone();
         #[cfg(feature = "files")]
@@ -408,7 +428,12 @@ impl Runner {
             #[cfg(feature = "broadcast")]
             broadcasting: Some(broadcasting.clone()),
             #[cfg(feature = "files")]
-            files: files.clone()
+            files: files.clone(),
+            // Not carried: the master watches, a worker is what it restarts.
+            #[cfg(feature = "watch")]
+            watch: false,
+            #[cfg(feature = "watch")]
+            watch_paths: Vec::new()
         }
         .encode()
         .map_err(Error::Registry)?;
@@ -439,6 +464,18 @@ impl Runner {
                     .bind_dyn::<dyn claviron::supervisor::SupervisorConfigSource, SupervisorPolicy>(
                         |source| source
                     )?;
+
+                // The master watches the source and restarts its workers; the
+                // workers are what it restarts, so they do not watch.
+                #[cfg(feature = "watch")]
+                if state.is_master()
+                    && let Some(paths) = &watch
+                {
+                    state.registry_ref().insert(Arc::new(crate::watch::SourceWatcher::new(
+                        application_root.clone(),
+                        paths.clone()
+                    )))?;
+                }
 
                 // A worker was started with no command line: whatever this
                 // process's `main` parsed, it parsed nothing. What it serves

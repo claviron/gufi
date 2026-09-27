@@ -26,6 +26,8 @@ pub mod routing;
 #[cfg(feature = "tls")]
 pub mod tls;
 pub mod trust;
+#[cfg(feature = "watch")]
+mod watch;
 #[cfg(feature = "websocket")]
 pub mod websocket;
 

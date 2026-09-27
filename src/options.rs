@@ -179,6 +179,20 @@ pub struct GufiOptions {
     #[cfg_attr(feature = "cli", arg(skip))]
     pub files: Option<crate::files::FilesSource>,
 
+    /// Restart the workers when the application's Python changes: a rolling
+    /// restart, requested by the master. Development only; needs two or more
+    /// `workers`.
+    #[cfg(feature = "watch")]
+    #[cfg_attr(feature = "cli", arg(long))]
+    pub watch: bool,
+
+    /// What to watch, relative to the root. Unwritten, every directory of
+    /// the root but the virtual environment, build output, storage and
+    /// public files, and the root's own `.py` files.
+    #[cfg(feature = "watch")]
+    #[cfg_attr(feature = "cli", arg(long = "watch-path"))]
+    pub watch_paths: Vec<PathBuf>,
+
     /// How many worker processes serve this application. Zero is standalone.
     ///
     /// Each worker is a process with an interpreter of its own, which is how
@@ -355,6 +369,14 @@ impl GufiOptions {
             broadcasting: self.broadcasting.or(written.broadcasting),
             #[cfg(feature = "files")]
             files: self.files.or(written.files),
+            #[cfg(feature = "watch")]
+            watch: self.watch || written.watch,
+            #[cfg(feature = "watch")]
+            watch_paths: if self.watch_paths.is_empty() {
+                written.watch_paths
+            } else {
+                self.watch_paths
+            },
             // Policy is written down, never typed: no flag can have stated it.
             supervisor: written.supervisor,
             config: self.config
