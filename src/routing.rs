@@ -30,10 +30,55 @@ use crate::asgi::{HttpRequest, PythonApplicationHandle};
 
 /// The request an ingress hands to the registered service.
 ///
-/// The body is already collected: both shapes this crate serves read a complete
-/// request before they have one to dispatch. Streaming is a transport property
-/// and neither transport here has it.
-pub type AppRequest = Request<Full<Bytes>>;
+/// The body streams: a socket's connection and the lane's slot both deliver it
+/// as it arrives, so a service reads it the same way whichever door it came
+/// through. A Rust route that wants it whole asks for it whole (axum's
+/// `Bytes`); the interpreter hands it to ASGI's `receive()` a part at a time.
+pub type AppRequest = Request<RequestBody>;
+
+/// A request body as an ingress hands it over: a socket connection's, or the
+/// lane's slot, read as it arrives.
+///
+/// Its own type rather than an alias for a boxed body: a boxed error inside a
+/// request type trips the compiler's `Send` check for any service future that
+/// captures one, and a name says what it is besides.
+pub struct RequestBody(UnsyncBoxBody<Bytes, BoxError>);
+
+impl RequestBody {
+    /// Box any body, its error carried as text.
+    pub fn new<B>(body: B) -> Self
+    where
+        B: http_body::Body<Data = Bytes> + Send + 'static,
+        B::Error: Into<BoxError>
+    {
+        Self(body.map_err(Into::into).boxed_unsync())
+    }
+
+    /// A request with no body.
+    pub fn empty() -> Self {
+        Self::new(http_body_util::Empty::<Bytes>::new())
+    }
+}
+
+impl http_body::Body for RequestBody {
+    type Data = Bytes;
+    type Error = BoxError;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>
+    ) -> Poll<Option<Result<http_body::Frame<Bytes>, BoxError>>> {
+        Pin::new(&mut self.0).poll_frame(context)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.0.is_end_stream()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.0.size_hint()
+    }
+}
 
 /// What the registered service answers with.
 ///
@@ -47,7 +92,7 @@ pub type AppResponse = Response<ResponseBody>;
 pub type ResponseBody = UnsyncBoxBody<Bytes, BoxError>;
 
 /// The error a reply body can end with.
-pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
+pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 /// A whole body, as a [`ResponseBody`].
 pub fn full_body(bytes: impl Into<Bytes>) -> ResponseBody {
@@ -331,10 +376,7 @@ where
 {
     let peers = request.extensions().get::<PeerAddrs>().copied();
     let (parts, body) = request.into_parts();
-    let body = match body.collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(error) => return text_response(StatusCode::BAD_REQUEST, error.to_string())
-    };
+    let body = body.map_err(|error| BoxError::from(error.to_string()));
 
     let scheme = match parts.extensions.get::<RequestScheme>() {
         Some(scheme) => scheme.0.clone(),
@@ -352,12 +394,11 @@ where
             .iter()
             .map(|(name, value)| (name.as_str().as_bytes().to_vec(), value.as_bytes().to_vec()))
             .collect(),
-        body: body.into(),
         client: peers.map(|peers| peers.client),
         server: peers.map(|peers| peers.server)
     };
 
-    match handle.handle_http(scope).await {
+    match handle.handle_http(scope, body).await {
         Ok(response) => response_from_asgi(
             response.status,
             response.headers,

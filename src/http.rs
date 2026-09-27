@@ -29,7 +29,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use claviron::runtime::{AppState, Provider, RunContext, Runnable, ServiceStartPolicy, registry};
 use http::{Request, Response, StatusCode};
-use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -419,7 +418,6 @@ where
             raw_path: request.uri().path().as_bytes().to_vec(),
             query_string: request.uri().query().unwrap_or_default().as_bytes().to_vec(),
             headers,
-            body: Vec::new(),
             client: resolved.client,
             server
         };
@@ -438,16 +436,14 @@ where
     {
         parts.headers.insert(http::header::HOST, value);
     }
-    let body = match body.collect().await {
-        Ok(body) => body.to_bytes(),
-        Err(error) => return Ok(error_response(StatusCode::BAD_REQUEST, error.to_string()))
-    };
 
     // The addresses belong to the connection, not to the request, so they ride
     // in extensions. A stage that needs them — the ASGI scope does — reads them
     // there; one that does not never sees them. A Unix socket has none, and
     // the scope then reports none.
-    let mut request = Request::from_parts(parts, Full::new(body));
+    // Handed over as it arrives, not read first: the service reads it, a part
+    // at a time if it is the interpreter.
+    let mut request = Request::from_parts(parts, crate::routing::RequestBody::new(body));
     if let (Some(client), Some(server)) = (resolved.client, server) {
         request.extensions_mut().insert(PeerAddrs { client, server });
     }

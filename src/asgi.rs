@@ -34,20 +34,23 @@ async def _cancel(task):
         pass
 
 
-async def drive_http(application, exchange, state):
-    request_sent = False
+async def drive_http(application, exchange, state, waiters):
     response_complete = False
 
+    # The body as the ingress reads it, a part per message; once it is all
+    # read, the next receive waits for the reply to complete or the client to
+    # leave, and then says `http.disconnect`. Waits are resolved by the loop,
+    # as a WebSocket's are.
     async def receive():
-        nonlocal request_sent
-        if request_sent:
-            return {"type": "http.disconnect"}
-        request_sent = True
-        return {
-            "type": "http.request",
-            "body": bytes(exchange.body),
-            "more_body": False,
-        }
+        event = exchange.try_receive()
+        if event is None:
+            waiter = asyncio.get_running_loop().create_future()
+            waiters[exchange.id] = (exchange, waiter)
+            try:
+                event = await waiter
+            finally:
+                waiters.pop(exchange.id, None)
+        return event
 
     async def send(message):
         nonlocal response_complete
@@ -65,6 +68,13 @@ async def drive_http(application, exchange, state):
             if waiting is not None:
                 await waiting
             response_complete = not more_body
+            if response_complete:
+                # A receive waiting past the body learns the exchange is over.
+                entry = waiters.get(exchange.id)
+                if entry is not None and not entry[1].done():
+                    event = exchange.try_receive()
+                    if event is not None:
+                        entry[1].set_result(event)
             return
         raise RuntimeError(f"unexpected ASGI HTTP message: {message_type!r}")
 
@@ -220,8 +230,9 @@ async def drive(application, control):
     # The loop takes requests itself: the doorbell is one more descriptor it
     # watches, and each time it is readable every request waiting is taken at
     # once. No second Python thread asks for work, so the GIL has one owner.
-    # WebSockets waiting for a message, by id: the doorbell names them and
-    # the loop resolves their waits here, on its own thread.
+    # WebSockets waiting for a message and HTTP requests waiting for a part
+    # of their body, by id: the doorbell names them and the loop resolves
+    # their waits here, on its own thread.
     waiters = {}
 
     def answer():
@@ -240,7 +251,7 @@ async def drive(application, control):
             if exchange.kind == "websocket":
                 work = drive_websocket(application, exchange, state, waiters)
             else:
-                work = drive_http(application, exchange, state)
+                work = drive_http(application, exchange, state, waiters)
             request = loop.create_task(work)
             requests.add(request)
             request.add_done_callback(requests.discard)
@@ -322,7 +333,6 @@ pub struct HttpRequest {
     pub raw_path: Vec<u8>,
     pub query_string: Vec<u8>,
     pub headers: Vec<(Vec<u8>, Vec<u8>)>,
-    pub body: Vec<u8>,
     pub client: Option<SocketAddr>,
     pub server: Option<SocketAddr>
 }
@@ -345,7 +355,23 @@ pub struct HttpResponse {
 #[derive(Debug)]
 pub struct ResponseStream {
     first: Option<Bytes>,
-    rest: Option<chunks::Receiver<Result<Bytes>>>
+    rest: Option<chunks::Receiver<Result<Bytes>>>,
+    /// The request this answers: dropped before its end, this reply tells it
+    /// the client is gone.
+    request: Option<BodyFeed>
+}
+
+/// Whoever reads a reply — a socket's connection, the lane's slot — drops it
+/// when the client goes, and a reply dropped before its end is the one signal
+/// both ingresses give. It is what `receive()` reads as `http.disconnect`.
+impl Drop for ResponseStream {
+    fn drop(&mut self) {
+        if let Some(request) = self.request.take()
+            && !http_body::Body::is_end_stream(self)
+        {
+            request.client_gone();
+        }
+    }
 }
 
 impl http_body::Body for ResponseStream {
@@ -552,14 +578,39 @@ impl PythonApplicationHandle {
     /// none has to be woken to deliver it. It used to run on a
     /// `spawn_blocking` thread parked on a channel — one per request in
     /// flight, and a wake on each side of it.
-    pub async fn handle_http(
+    ///
+    /// The body goes as it is read. What is already here when the request
+    /// arrives — all of a bodiless or small one — is handed over with it and
+    /// costs no wake; the rest follows a part at a time, each taken by
+    /// `receive()` before the next is read, so an upload the application reads
+    /// slowly is slowed at its source rather than held here.
+    pub async fn handle_http<B>(
         &self,
-        request: HttpRequest
-    ) -> Result<HttpResponse> {
+        request: HttpRequest,
+        body: B
+    ) -> Result<HttpResponse>
+    where
+        B: http_body::Body<Data = Bytes> + Send + 'static,
+        B::Error: std::fmt::Display + Send
+    {
+        let feed = BodyFeed {
+            id: EXCHANGE_IDS.fetch_add(1, Ordering::Relaxed),
+            shared: Arc::new(BodyInbound::default()),
+            commands: self.commands.clone()
+        };
+        let mut body = Box::pin(body);
+        let more = feed.take_ready(body.as_mut());
         let (response, response_rx) = oneshot::channel();
         self.commands
-            .send(ApplicationCommand::Http { request: Box::new(request), response })
+            .send(ApplicationCommand::Http {
+                request: Box::new(request),
+                body: feed.clone(),
+                response
+            })
             .map_err(|_| Error::ApplicationStopped)?;
+        if more {
+            tokio::spawn(feed.pump(body));
+        }
         response_rx.await.map_err(|_| Error::ResponseChannelClosed)?
     }
 
@@ -572,7 +623,7 @@ impl PythonApplicationHandle {
         let (decision, decided) = oneshot::channel();
         // One message in flight each way: the side that is behind makes the
         // other wait, rather than a buffer growing between them.
-        let id = WEBSOCKET_IDS.fetch_add(1, Ordering::Relaxed);
+        let id = EXCHANGE_IDS.fetch_add(1, Ordering::Relaxed);
         let shared = Arc::new(Inbound::default());
         let (outbound_tx, outbound) = chunks::channel(1);
         let ends =
@@ -639,6 +690,7 @@ fn commands() -> Result<(Commands, Doorbell)> {
 enum ApplicationCommand {
     Http {
         request: Box<HttpRequest>,
+        body: BodyFeed,
         response: oneshot::Sender<Result<HttpResponse>>
     },
     WebSocket {
@@ -756,7 +808,180 @@ impl WebSocketInbound {
     }
 }
 
-static WEBSOCKET_IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+/// One numbering for WebSockets and HTTP requests: the loop keeps their waits
+/// in one table, by id.
+static EXCHANGE_IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// A request body on its way to the application.
+///
+/// Handed over the way a WebSocket's messages are: parts queue here and the
+/// application's loop takes them itself, and only when it is already waiting
+/// does the doorbell ring. One part is queued at a time — the reader behind
+/// the ingress is not read further until the application has taken it.
+#[derive(Default)]
+struct BodyInbound {
+    state: Mutex<BodyState>,
+    /// Signalled when the application takes a part, or lets the request go.
+    room: tokio::sync::Notify
+}
+
+#[derive(Default)]
+struct BodyState {
+    queue: std::collections::VecDeque<Bytes>,
+    /// The ingress read the body's end.
+    ended: bool,
+    /// The body was cut short: too large, stalled, its client gone.
+    failed: bool,
+    /// `receive()` has said `more_body: False`.
+    delivered: bool,
+    /// The application completed its reply.
+    replied: bool,
+    /// The client left before the reply reached its end.
+    gone: bool,
+    /// The application asked and found nothing; the next change rings.
+    waiting: bool,
+    /// The application is done with the request; nothing more is read.
+    abandoned: bool
+}
+
+/// Both ends of a request body: the ingress feeds it, the exchange reads it.
+#[derive(Clone)]
+struct BodyFeed {
+    id: u64,
+    shared: Arc<BodyInbound>,
+    commands: Commands
+}
+
+impl std::fmt::Debug for BodyFeed {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>
+    ) -> std::fmt::Result {
+        f.debug_struct("BodyFeed").field("id", &self.id).finish_non_exhaustive()
+    }
+}
+
+impl BodyFeed {
+    /// Take what the body already holds, without waiting: a bodiless request
+    /// has ended, a small one is one part and its end. Two looks, not a loop —
+    /// a fast upload keeps refilling, and this is not the place to read it.
+    /// `true` when there is more to read.
+    fn take_ready<B>(
+        &self,
+        mut body: std::pin::Pin<&mut B>
+    ) -> bool
+    where
+        B: http_body::Body<Data = Bytes>,
+        B::Error: std::fmt::Display
+    {
+        use std::task::{Context, Poll, Waker};
+        let mut context = Context::from_waker(Waker::noop());
+        let mut state = self.shared.state.lock().unwrap();
+        for _ in 0..2 {
+            match body.as_mut().poll_frame(&mut context) {
+                Poll::Ready(Some(Ok(frame))) => {
+                    if let Ok(data) = frame.into_data()
+                        && !data.is_empty()
+                    {
+                        state.queue.push_back(data);
+                    }
+                }
+                Poll::Ready(Some(Err(_))) => {
+                    state.failed = true;
+                    return false;
+                }
+                Poll::Ready(None) => {
+                    state.ended = true;
+                    return false;
+                }
+                Poll::Pending => return true
+            }
+        }
+        true
+    }
+
+    /// Read the rest, a part at a time, each after the application took the
+    /// last.
+    async fn pump<B>(
+        self,
+        mut body: std::pin::Pin<Box<B>>
+    ) where
+        B: http_body::Body<Data = Bytes>,
+        B::Error: std::fmt::Display
+    {
+        use http_body_util::BodyExt;
+        loop {
+            match body.frame().await {
+                Some(Ok(frame)) => {
+                    let Ok(data) = frame.into_data() else { continue };
+                    if !data.is_empty() && !self.deliver(data).await {
+                        return;
+                    }
+                }
+                Some(Err(error)) => {
+                    tracing::debug!("request body ended early: {error}");
+                    self.change(|state| state.failed = true);
+                    return;
+                }
+                None => {
+                    self.change(|state| state.ended = true);
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Queue one part once the last is taken. `false` once the application is
+    /// done with the request.
+    async fn deliver(
+        &self,
+        part: Bytes
+    ) -> bool {
+        let mut part = Some(part);
+        loop {
+            let room = self.shared.room.notified();
+            tokio::pin!(room);
+            room.as_mut().enable();
+            {
+                let mut state = self.shared.state.lock().unwrap();
+                if state.abandoned {
+                    return false;
+                }
+                if state.queue.is_empty() {
+                    state.queue.push_back(part.take().expect("delivered once"));
+                    self.ring(state);
+                    return true;
+                }
+            }
+            room.await;
+        }
+    }
+
+    /// The reply was dropped before its end.
+    fn client_gone(&self) {
+        self.change(|state| state.gone = true);
+    }
+
+    fn change(
+        &self,
+        apply: impl FnOnce(&mut BodyState)
+    ) {
+        let mut state = self.shared.state.lock().unwrap();
+        apply(&mut state);
+        self.ring(state);
+    }
+
+    fn ring(
+        &self,
+        mut state: std::sync::MutexGuard<'_, BodyState>
+    ) {
+        let ring = std::mem::take(&mut state.waiting);
+        drop(state);
+        if ring {
+            let _ = self.commands.send(ApplicationCommand::Ready(self.id));
+        }
+    }
+}
 
 #[pyclass]
 struct LifespanControl {
@@ -827,8 +1052,9 @@ impl LifespanControl {
         loop {
             match doorbell.queue.try_recv() {
                 Ok(ApplicationCommand::Ready(id)) => ready.push(id),
-                Ok(ApplicationCommand::Http { request, response }) => {
-                    exchanges.push(Py::new(py, HttpExchange::new(*request, response))?.into_any());
+                Ok(ApplicationCommand::Http { request, body, response }) => {
+                    exchanges
+                        .push(Py::new(py, HttpExchange::new(*request, body, response))?.into_any());
                 }
                 Ok(ApplicationCommand::WebSocket { request, ends }) => {
                     exchanges.push(Py::new(py, WebSocketExchange::new(*request, ends))?.into_any());
@@ -856,6 +1082,7 @@ impl LifespanControl {
 #[pyclass]
 struct HttpExchange {
     request: HttpRequest,
+    body: BodyFeed,
     response: Mutex<HttpResponseState>
 }
 
@@ -872,10 +1099,12 @@ struct HttpResponseState {
 impl HttpExchange {
     fn new(
         request: HttpRequest,
+        body: BodyFeed,
         sender: oneshot::Sender<Result<HttpResponse>>
     ) -> Self {
         Self {
             request,
+            body,
             response: Mutex::new(HttpResponseState {
                 sender: Some(sender),
                 status: None,
@@ -930,8 +1159,46 @@ impl HttpExchange {
     }
 
     #[getter]
-    fn body(&self) -> Vec<u8> {
-        self.request.body.clone()
+    fn id(&self) -> u64 {
+        self.body.id
+    }
+
+    /// The next ASGI receive event, or `None` to wait: the loop is rung when
+    /// there is one.
+    ///
+    /// Parts as they came, `more_body` false on the last. Past the body,
+    /// `http.disconnect` once the reply is complete or the client has left;
+    /// a body cut short is a disconnect at once, which is what ASGI makes of
+    /// a request that did not arrive whole.
+    fn try_receive<'py>(
+        &self,
+        py: Python<'py>
+    ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let mut state = self.body.shared.state.lock().unwrap();
+        let event = PyDict::new(py);
+        if let Some(part) = state.queue.pop_front() {
+            let last = state.queue.is_empty() && state.ended;
+            state.delivered |= last;
+            drop(state);
+            self.body.shared.room.notify_one();
+            event.set_item("type", "http.request")?;
+            event.set_item("body", pyo3::types::PyBytes::new(py, &part))?;
+            event.set_item("more_body", !last)?;
+            return Ok(Some(event));
+        }
+        if state.ended && !state.delivered {
+            state.delivered = true;
+            event.set_item("type", "http.request")?;
+            event.set_item("body", pyo3::types::PyBytes::new(py, b""))?;
+            event.set_item("more_body", false)?;
+            return Ok(Some(event));
+        }
+        if state.failed || state.gone || (state.delivered && state.replied) {
+            event.set_item("type", "http.disconnect")?;
+            return Ok(Some(event));
+        }
+        state.waiting = true;
+        Ok(None)
     }
 
     #[getter]
@@ -991,6 +1258,9 @@ impl HttpExchange {
             ));
         }
         response.complete = !more_body;
+        if !more_body {
+            self.body.shared.state.lock().unwrap().replied = true;
+        }
         let part = Bytes::from(body);
 
         // The first part: the head goes with it.
@@ -1009,7 +1279,7 @@ impl HttpExchange {
             let _ = sender.send(Ok(HttpResponse {
                 status,
                 headers: std::mem::take(&mut response.headers),
-                body: ResponseStream { first, rest }
+                body: ResponseStream { first, rest, request: Some(self.body.clone()) }
             }));
             return Ok(None);
         }
@@ -1051,6 +1321,10 @@ impl HttpExchange {
 
 impl Drop for HttpExchange {
     fn drop(&mut self) {
+        // The application is done with the request: its body is not read any
+        // further, and whatever feeds it stops.
+        self.body.shared.state.lock().unwrap().abandoned = true;
+        self.body.shared.room.notify_waiters();
         let mut response = self.response.lock().unwrap();
         if let Some(sender) = response.sender.take() {
             let _ = sender.send(Err(Error::ResponseChannelClosed));

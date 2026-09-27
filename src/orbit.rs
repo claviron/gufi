@@ -38,8 +38,8 @@ use claviron::runtime::{
     AppState, FleetIncarnation, Provider, RunContext, Runnable, ServiceStartPolicy, registry
 };
 use http::{Request, Uri};
-use http_body_util::{BodyExt, Full};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use http_body_util::BodyExt;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
@@ -309,17 +309,18 @@ async fn serve(
         return;
     }
 
+    // The request body is handed on as it arrives rather than read to its end
+    // first: the edge streams it into the slot, and the application reads it
+    // from there a part at a time. A body the edge cut short ends in an error,
+    // not an end, and the application reads a disconnect.
     let (mut reply_body, request_body) = match body {
         Some(endpoint) => {
-            let (mut incoming, outgoing) = endpoint.split();
-            let mut collected = Vec::new();
-            if let Err(error) = incoming.read_to_end(&mut collected).await {
-                tracing::debug!("exchange {correlation} body ended early: {error}");
-                return;
-            }
-            (Some(outgoing), collected)
+            let (incoming, outgoing) = endpoint.split();
+            let piece = declared_length(&exchange.headers)
+                .map_or(TRANSPORT_BUFFER_BYTES, |length| length.clamp(1, TRANSPORT_BUFFER_BYTES));
+            (Some(outgoing), crate::routing::RequestBody::new(SlotBody::new(incoming, piece)))
         }
-        None => (None, Vec::new())
+        None => (None, crate::routing::RequestBody::empty())
     };
 
     let request = match build_request(&exchange, request_body) {
@@ -474,7 +475,6 @@ async fn serve_websocket(
         raw_path: exchange.raw_path.clone(),
         query_string: exchange.query.clone(),
         headers: exchange.headers.clone(),
-        body: Vec::new(),
         client: exchange.client,
         server: exchange.server
     };
@@ -528,8 +528,8 @@ async fn serve_websocket(
 /// back out of it unchanged instead of being decoded twice.
 fn build_request(
     exchange: &Exchange,
-    body: Vec<u8>
-) -> Result<Request<Full<Bytes>>, String> {
+    body: crate::routing::RequestBody
+) -> Result<crate::routing::AppRequest, String> {
     let mut target = exchange.raw_path.clone();
     if !exchange.query.is_empty() {
         target.push(b'?');
@@ -544,12 +544,88 @@ fn build_request(
     for (name, value) in &exchange.headers {
         request = request.header(name.as_slice(), value.as_slice());
     }
-    let mut request =
-        request.body(Full::new(Bytes::from(body))).map_err(|error| error.to_string())?;
+    let mut request = request.body(body).map_err(|error| error.to_string())?;
 
     request.extensions_mut().insert(RequestScheme(exchange.scheme.clone()));
     if let (Some(client), Some(server)) = (exchange.client, exchange.server) {
         request.extensions_mut().insert(PeerAddrs { client, server });
     }
     Ok(request)
+}
+
+/// The length a request declared, which sizes the reads of its body.
+fn declared_length(headers: &[(Vec<u8>, Vec<u8>)]) -> Option<usize> {
+    headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(b"content-length"))
+        .and_then(|(_, value)| std::str::from_utf8(value).ok()?.trim().parse().ok())
+}
+
+/// A request body read out of the exchange's slot, a part as large as the
+/// ring holds at once.
+///
+/// The piece is sized the way the edge sizes a reply's: as long as the body
+/// says it is, up to one window, so a small body is one read and a large one
+/// is not cut into the stream's default four kilobytes. The buffer is reused:
+/// a part splits off what was read and the rest of the allocation takes the
+/// next.
+struct SlotBody<R> {
+    half: R,
+    buffer: bytes::BytesMut,
+    piece: usize
+}
+
+impl<R> SlotBody<R> {
+    fn new(
+        half: R,
+        piece: usize
+    ) -> Self {
+        Self { half, buffer: bytes::BytesMut::new(), piece }
+    }
+}
+
+impl<R> http_body::Body for SlotBody<R>
+where
+    R: tokio::io::AsyncRead + Unpin
+{
+    type Data = Bytes;
+    type Error = crate::routing::BoxError;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Bytes>, Self::Error>>> {
+        use std::task::{Poll, ready};
+        let this = &mut *self;
+        if this.buffer.capacity() < this.piece {
+            this.buffer.reserve(this.piece);
+        }
+        let read =
+            ready!(tokio_util_poll_read(&mut this.half, &mut this.buffer, this.piece, context));
+        Poll::Ready(match read {
+            Ok(0) => None,
+            Ok(_) => Some(Ok(http_body::Frame::data(this.buffer.split().freeze()))),
+            Err(error) => Some(Err(error.into()))
+        })
+    }
+}
+
+/// Read into the spare capacity of `buffer`, at most `limit` bytes.
+fn tokio_util_poll_read<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut R,
+    buffer: &mut bytes::BytesMut,
+    limit: usize,
+    context: &mut std::task::Context<'_>
+) -> std::task::Poll<std::io::Result<usize>> {
+    use bytes::BufMut;
+    let spare = buffer.chunk_mut();
+    let len = spare.len().min(limit);
+    // SAFETY: `ReadBuf` treats the slice as uninitialised and records only
+    // what the reader fills; `advance_mut` then exposes exactly that much.
+    let slice = unsafe { std::slice::from_raw_parts_mut(spare.as_mut_ptr().cast(), len) };
+    let mut read = tokio::io::ReadBuf::uninit(slice);
+    std::task::ready!(std::pin::Pin::new(reader).poll_read(context, &mut read))?;
+    let filled = read.filled().len();
+    unsafe { buffer.advance_mut(filled) };
+    std::task::Poll::Ready(Ok(filled))
 }
