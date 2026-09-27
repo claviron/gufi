@@ -54,7 +54,7 @@ async fn main() -> gufi::Result<()> {
 ```rust
 // src/app.rs
 pub fn configure(state: &AppState) -> registry::Result<()> {
-    gufi::register(state, routes::router())
+    gufi::register_routes(state, routes::router)
 }
 ```
 
@@ -78,12 +78,14 @@ admission, drains what is in flight, runs ASGI lifespan shutdown, and returns.
 Gufi has no router. Bring axum, warp, tower-http or a bare `service_fn`:
 
 ```rust
+use claviron::AppState;
 use gufi::axum::{Router, routing::get};
 
-pub fn router() -> Router {
+pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/orders/{id}", get(order))
+        .with_state(state)
 }
 ```
 
@@ -91,14 +93,14 @@ Nothing there mentions a fallback, and nothing should: **the Python
 application is the fallback.** A path your routes do not declare, and a
 declared path reached with an undeclared method, both reach the interpreter.
 Your application stays the authority on what exists; the Rust routes only
-intercept. `register` wires that for you.
+intercept. `register_routes` wires that for you.
 
 If you want to place the interpreter yourself — your own 404 for a subtree, or
-a framework whose fallthrough lives somewhere else — use `register_with`, which
+a framework whose fallthrough lives somewhere else — use `register_routes_with`, which
 hands you the service and takes only `tower-service`:
 
 ```rust
-gufi::register_with(state, |python| warp_filter().or(python_arm(python)))
+gufi::register_routes_with(state, |python| warp_filter().or(python_arm(python)))
 ```
 
 `gufi::axum` re-exports Claviron's axum, so your application and this crate

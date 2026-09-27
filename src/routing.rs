@@ -225,19 +225,23 @@ pub(crate) fn python_service(state: &AppState) -> PythonService {
         .service()
 }
 
-/// Register the routes this application answers in Rust.
+/// This application's routes in Rust, in front of its Python application.
 ///
 /// ```ignore
 /// // app.rs
 /// pub fn configure(state: &AppState) -> registry::Result<()> {
-///     gufi::register(state, router::router())
+///     gufi::register_routes(state, routes::router)
 /// }
 ///
-/// // router.rs
-/// pub fn router() -> Router {
-///     Router::new().route("/hello/{name}", get(hello))
+/// // routes.rs
+/// pub fn router(state: AppState) -> Router {
+///     Router::new().route("/hello/{name}", get(hello)).with_state(state)
 /// }
 /// ```
+///
+/// Handed the function that builds the router, not the router: this crate
+/// calls it with the application's state, so the call reads as what it is
+/// rather than carrying a clone.
 ///
 /// The router is yours and this crate has no opinion about it. What it does
 /// have is the rule the whole runner is: **the Python application is the
@@ -247,12 +251,16 @@ pub(crate) fn python_service(state: &AppState) -> PythonService {
 /// routes only intercept. That wiring happens here rather than in your router,
 /// because it is what this runner is rather than something to decide per
 /// application. An application that does want to decide uses
-/// [`register_with`].
+/// [`register_routes_with`].
 #[cfg(feature = "axum")]
-pub fn register(
+pub fn register_routes<F>(
     state: &AppState,
-    router: claviron::axum::Router
-) -> registry::Result<()> {
+    router: F
+) -> registry::Result<()>
+where
+    F: FnOnce(AppState) -> claviron::axum::Router
+{
+    let router = router(state.clone());
     #[cfg(feature = "bench")]
     let router = {
         tracing::info!(
@@ -272,17 +280,17 @@ pub fn register(
     register_service(state, router)
 }
 
-/// Register the service, placing the interpreter yourself.
+/// This application's service, placing the interpreter yourself.
 ///
-/// [`register`] applies the rule for you: the Python application is the
+/// [`register_routes`] applies the rule for you: the Python application is the
 /// fallback. Use this when the application wants to decide instead — its own
 /// 404 for a subtree, axum's, the interpreter somewhere other than the end.
 /// The builder is handed the Python application and puts it where it wants:
 ///
 /// ```ignore
-/// gufi::register_with(state, |python| my_router().fallback_service(python))
+/// gufi::register_routes_with(state, |python| my_router().fallback_service(python))
 /// ```
-pub fn register_with<F, S, B>(
+pub fn register_routes_with<F, S, B>(
     state: &AppState,
     build: F
 ) -> registry::Result<()>
