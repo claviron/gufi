@@ -106,6 +106,12 @@ django = ["broadcast"]
 # Claviron's file service — what runserver's static handling or WhiteNoise
 # does, for a process no edge stands in front of. No edge comes with it.
 files = ["axum", "claviron/files"]
+# Claviron's log pipeline for this application's fleet: the channels
+# `logging.yaml` beside it declares, written by the master's one writer, and
+# `claviron.LogHandler` putting Python's `logging` on them — what the
+# `claviron` log driver is to Laravel. `log-otlp` adds the OTLP adapter.
+log = ["claviron/log-pipeline"]
+log-otlp = ["log", "claviron/log-otlp"]
 # Development's reload: the master watches the application's Python with the
 # platform's native notifications and asks for a rolling worker restart on a
 # change. Needs two or more workers; production carries no watcher.

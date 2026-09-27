@@ -19,6 +19,8 @@ mod django;
 #[cfg(feature = "files")]
 mod files;
 mod http;
+#[cfg(feature = "log")]
+mod log;
 pub(crate) mod options;
 mod orbit;
 mod python;

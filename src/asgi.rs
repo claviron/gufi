@@ -1715,6 +1715,9 @@ fn install_claviron_module(
     {
         nothing &= channels.is_none();
     }
+    // The log handler exists whenever the feature is built in: one naming an
+    // undeclared channel says so when it is configured.
+    nothing &= !cfg!(feature = "log");
     if nothing {
         return Ok(());
     }
@@ -1752,6 +1755,28 @@ fn install_claviron_module(
         modules.cast_into::<PyDict>().map_err(|error| Error::Python(error.to_string()))?;
     PyDictMethods::set_item(&modules, "claviron", &module)
         .map_err(|error| python_error(py, error))?;
+
+    // `claviron.LogHandler` and the two functions behind it: the handler's
+    // Python reads `claviron` from `sys.modules`, so it runs after.
+    #[cfg(feature = "log")]
+    {
+        let functions = [
+            pyo3::wrap_pyfunction!(crate::log::log_channel, &module),
+            pyo3::wrap_pyfunction!(crate::log::log, &module)
+        ];
+        for function in functions {
+            let function = function.map_err(|error| python_error(py, error))?;
+            module.add_function(function).map_err(|error| python_error(py, error))?;
+        }
+        let code =
+            CString::new(crate::log::MODULE_SOURCE).expect("log handler source has no NUL bytes");
+        let filename = CString::new("<claviron-log>").unwrap();
+        let name = CString::new("claviron._log").unwrap();
+        let handler = PyModule::from_code(py, &code, &filename, &name)
+            .and_then(|source| source.getattr("LogHandler"))
+            .map_err(|error| python_error(py, error))?;
+        module.add("LogHandler", handler).map_err(|error| python_error(py, error))?;
+    }
 
     // `claviron.channels`, importable by the dotted path Django settings name.
     // Its Python needs `claviron._channels` in place, so it runs after the
