@@ -571,8 +571,13 @@ impl Runner {
                     claviron::runner::Owner::new(application.service())
                 )?;
                 state.registry_ref().insert(application)?;
-                // What stands in front of the routes.
-                let routing = claviron::runner::Routing::new();
+                // What stands in front of the routes. No request policy is
+                // configurable here yet, so none is applied, stated rather than
+                // left to a default; nor a bound on concurrent requests.
+                let routing = claviron::runner::Routing::new(
+                    claviron::http::policy::HttpPolicy::unlimited(),
+                    None
+                );
                 #[cfg(feature = "files")]
                 let routing = routing.files(files);
                 state.registry_ref().insert(Arc::new(routing))?;
