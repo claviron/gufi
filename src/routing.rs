@@ -230,7 +230,7 @@ pub(crate) fn python_service(state: &AppState) -> PythonService {
 /// ```ignore
 /// // app.rs
 /// pub fn configure(state: &AppState) -> registry::Result<()> {
-///     gufi::register_routes(state, routes::router)
+///     gufi::register_router(state, routes::router)
 /// }
 ///
 /// // routes.rs
@@ -251,9 +251,9 @@ pub(crate) fn python_service(state: &AppState) -> PythonService {
 /// routes only intercept. That wiring happens here rather than in your router,
 /// because it is what this runner is rather than something to decide per
 /// application. An application that does want to decide uses
-/// [`register_routes_with`].
+/// [`register_router_with`].
 #[cfg(feature = "axum")]
-pub fn register_routes<F>(
+pub fn register_router<F>(
     state: &AppState,
     router: F
 ) -> registry::Result<()>
@@ -282,15 +282,15 @@ where
 
 /// This application's service, placing the interpreter yourself.
 ///
-/// [`register_routes`] applies the rule for you: the Python application is the
+/// [`register_router`] applies the rule for you: the Python application is the
 /// fallback. Use this when the application wants to decide instead — its own
 /// 404 for a subtree, axum's, the interpreter somewhere other than the end.
 /// The builder is handed the Python application and puts it where it wants:
 ///
 /// ```ignore
-/// gufi::register_routes_with(state, |python| my_router().fallback_service(python))
+/// gufi::register_router_with(state, |python| my_router().fallback_service(python))
 /// ```
-pub fn register_routes_with<F, S, B>(
+pub fn register_router_with<F, S, B>(
     state: &AppState,
     build: F
 ) -> registry::Result<()>

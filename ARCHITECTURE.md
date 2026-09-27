@@ -55,7 +55,7 @@ A `tower_service::Service`, which is deliberately not a server.
 
 ```rust
 pub fn configure(state: &AppState) -> registry::Result<()> {
-    gufi::register_routes(state, routes::router)
+    gufi::register_router(state, routes::router)
 }
 ```
 
@@ -72,7 +72,7 @@ copy.
 
 Two entry points, because that vocabulary differs:
 
-- **`register_routes`** — with the `axum` feature, takes the function that builds the
+- **`register_router`** — with the `axum` feature, takes the function that builds the
   application's `axum::Router` (called with its state) and applies
   the rule for you: the Python application becomes that router's
   `fallback_service` and its `method_not_allowed_fallback`. The application
@@ -81,7 +81,7 @@ Two entry points, because that vocabulary differs:
   path, or a declared path reached with an undeclared method — reaches the
   interpreter, so the application stays the authority on what exists and the
   Rust routes only intercept.
-- **`register_routes_with`** — takes a builder handed the Python service, and the
+- **`register_router_with`** — takes a builder handed the Python service, and the
   application places it itself. It needs only `tower-service`, so a warp filter
   or a bare service goes through with no axum in the graph at all.
 

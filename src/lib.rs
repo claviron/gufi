@@ -32,9 +32,9 @@ pub use http::{Bind, Protocols};
 pub use options::{CONFIG_FILE, GufiOptions};
 pub use python::{Error, Result, Runner};
 #[cfg(feature = "axum")]
-pub use routing::register_routes;
+pub use routing::register_router;
 pub use routing::{
-    AppRequest, AppResponse, PeerAddrs, PythonService, RequestBody, RequestScheme, register_routes_with
+    AppRequest, AppResponse, PeerAddrs, PythonService, RequestBody, RequestScheme, register_router_with
 };
 #[cfg(feature = "tls")]
 pub use tls::Tls;
