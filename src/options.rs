@@ -166,13 +166,12 @@ pub struct GufiOptions {
     #[cfg_attr(feature = "cli", arg(long))]
     pub venv: Option<PathBuf>,
 
-    /// The broadcast application `claviron.broadcast(...)` publishes to when
-    /// it names none, and the switch that starts the service: the
-    /// applications themselves — ids, keys, secrets — are `broadcast.yaml`
-    /// beside the application.
+    /// Broadcasting in this process: the application `claviron.broadcast`
+    /// publishes to, and later Django Channels' layer. Written in the file
+    /// only; the applications' ids, keys and secrets are `broadcast.yaml`.
     #[cfg(feature = "broadcast")]
-    #[cfg_attr(feature = "cli", arg(long))]
-    pub broadcast_application: Option<String>,
+    #[cfg_attr(feature = "cli", arg(skip))]
+    pub broadcasting: Option<Broadcasting>,
 
     /// How many worker processes serve this application. Zero is standalone.
     ///
@@ -201,6 +200,16 @@ pub struct GufiOptions {
     /// one application is one file.
     #[cfg_attr(feature = "cli", arg(skip))]
     pub supervisor: Option<claviron::supervisor::SupervisorConfig>
+}
+
+/// The `broadcasting:` section of the launch.
+#[cfg(feature = "broadcast")]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Broadcasting {
+    /// The broadcast application `claviron.broadcast(...)` publishes to when
+    /// a call names none.
+    pub application: Option<String>
 }
 
 /// What gufi calls its file beside an application.
@@ -298,7 +307,7 @@ impl GufiOptions {
             venv: self.venv.or(written.venv),
             workers: self.workers.or(written.workers),
             #[cfg(feature = "broadcast")]
-            broadcast_application: self.broadcast_application.or(written.broadcast_application),
+            broadcasting: self.broadcasting.or(written.broadcasting),
             // Policy is written down, never typed: no flag can have stated it.
             supervisor: written.supervisor,
             config: self.config

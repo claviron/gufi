@@ -255,10 +255,10 @@ impl Runner {
             config,
             supervisor,
             #[cfg(feature = "broadcast")]
-            broadcast_application
+            broadcasting
         } = options;
         #[cfg(feature = "broadcast")]
-        if let Some(application) = broadcast_application {
+        if let Some(application) = broadcasting.and_then(|broadcasting| broadcasting.application) {
             self.broadcast_application = Some(application);
         }
         if let Some(path) = config {
@@ -394,7 +394,9 @@ impl Runner {
             // did, so the fleet is supervised by one written-down decision.
             supervisor: Some(supervisor.clone()),
             #[cfg(feature = "broadcast")]
-            broadcast_application: broadcast_application.clone()
+            broadcasting: Some(crate::options::Broadcasting {
+                application: broadcast_application.clone()
+            })
         }
         .encode()
         .map_err(Error::Registry)?;
@@ -457,7 +459,9 @@ impl Runner {
                 // A worker's is its master's, carried in the launch.
                 #[cfg(feature = "broadcast")]
                 let broadcast_application = match inherited.as_ref() {
-                    Some(options) => options.broadcast_application.clone(),
+                    Some(options) => {
+                        options.broadcasting.as_ref().and_then(|b| b.application.clone())
+                    }
                     None => broadcast_application.clone()
                 };
                 let (orbit, binds, protocols, trusted, application_name, root, venv) =

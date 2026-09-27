@@ -32,6 +32,8 @@ pub mod websocket;
 pub use claviron::axum;
 pub use http::{Bind, Protocols};
 pub use options::{CONFIG_FILE, GufiOptions};
+#[cfg(feature = "broadcast")]
+pub use options::Broadcasting;
 pub use python::{Error, Result, Runner};
 #[cfg(feature = "axum")]
 pub use routing::register_router;
