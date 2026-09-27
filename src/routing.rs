@@ -18,81 +18,31 @@ use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
-use claviron::runtime::{AppState, Provider, registry};
+/// The request an ingress hands to the registered service, its body read as
+/// it arrives — the runner shell's, shared by every runner.
+pub use claviron::runner::{AppRequest, RequestBody};
+#[cfg(feature = "axum")]
+use claviron::runtime::{AppState, registry};
 use http::{Request, Response, StatusCode};
-use http_body_util::combinators::UnsyncBoxBody;
 use http_body_util::{BodyExt, Full};
 use percent_encoding::percent_decode_str;
 use tower_service::Service;
 
-use crate::application::PythonApplicationService;
 use crate::asgi::{HttpRequest, PythonApplicationHandle};
-
-/// The request an ingress hands to the registered service.
-///
-/// The body streams: a socket's connection and the lane's slot both deliver it
-/// as it arrives, so a service reads it the same way whichever door it came
-/// through. A Rust route that wants it whole asks for it whole (axum's
-/// `Bytes`); the interpreter hands it to ASGI's `receive()` a part at a time.
-pub type AppRequest = Request<RequestBody>;
-
-/// A request body as an ingress hands it over: a socket connection's, or the
-/// lane's slot, read as it arrives.
-///
-/// Its own type rather than an alias for a boxed body: a boxed error inside a
-/// request type trips the compiler's `Send` check for any service future that
-/// captures one, and a name says what it is besides.
-pub struct RequestBody(UnsyncBoxBody<Bytes, BoxError>);
-
-impl RequestBody {
-    /// Box any body, its error carried as text.
-    pub fn new<B>(body: B) -> Self
-    where
-        B: http_body::Body<Data = Bytes> + Send + 'static,
-        B::Error: Into<BoxError>
-    {
-        Self(body.map_err(Into::into).boxed_unsync())
-    }
-
-    /// A request with no body.
-    pub fn empty() -> Self {
-        Self::new(http_body_util::Empty::<Bytes>::new())
-    }
-}
-
-impl http_body::Body for RequestBody {
-    type Data = Bytes;
-    type Error = BoxError;
-
-    fn poll_frame(
-        mut self: Pin<&mut Self>,
-        context: &mut Context<'_>
-    ) -> Poll<Option<Result<http_body::Frame<Bytes>, BoxError>>> {
-        Pin::new(&mut self.0).poll_frame(context)
-    }
-
-    fn is_end_stream(&self) -> bool {
-        self.0.is_end_stream()
-    }
-
-    fn size_hint(&self) -> http_body::SizeHint {
-        self.0.size_hint()
-    }
-}
 
 /// What the registered service answers with.
 ///
 /// The body streams: an application's reply reaches the client as it is
 /// produced — a server-sent event as it is sent — and one that is whole says
 /// its exact size, which is how an ingress knows it can hand it over at once.
-pub type AppResponse = Response<ResponseBody>;
+pub type AppResponse = http::Response<ResponseBody>;
 
 /// A reply body: whatever the application produced, boxed so every ingress
 /// takes one type.
-pub type ResponseBody = UnsyncBoxBody<Bytes, BoxError>;
+pub type ResponseBody = claviron::http::RouteBody;
 
 /// The error a reply body can end with.
-pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
+pub type BoxError = claviron::http::RouteBodyError;
 
 /// A whole body, as a [`ResponseBody`].
 pub fn full_body(bytes: impl Into<Bytes>) -> ResponseBody {
@@ -123,119 +73,6 @@ pub struct PeerAddrs {
 #[derive(Clone, Debug)]
 pub struct RequestScheme(pub String);
 
-/// The service this application answers requests with, as the runner holds it.
-///
-/// Registration erases the concrete type so one ingress can drive whatever the
-/// application composed.
-pub struct Application {
-    service: Arc<dyn ErasedService>
-}
-
-impl Application {
-    /// Hand a request to whatever this application registered.
-    ///
-    /// Every ingress arrives here — the local listener, the fleet lane, and
-    /// whatever comes next — which is why the exchange is counted here rather
-    /// than in each of them. Claviron's edge does the same at its own single
-    /// fork, so the number means the same thing on both sides of the
-    /// transport: work this process has taken and not yet answered.
-    pub(crate) fn call(
-        &self,
-        request: AppRequest
-    ) -> BoxFuture<AppResponse> {
-        let exchange = claviron::runtime::activity::ACTIVITY.begin();
-        let answering = self.service.call_erased(request);
-        Box::pin(async move {
-            let response = answering.await;
-            drop(exchange);
-            response
-        })
-    }
-}
-
-impl Provider<AppState> for Application {
-    fn name(&self) -> &'static str {
-        "Application"
-    }
-}
-
-pub(crate) trait ErasedService: Send + Sync + 'static {
-    fn call_erased(
-        &self,
-        request: AppRequest
-    ) -> BoxFuture<AppResponse>;
-}
-
-struct Erased<S>(S);
-
-impl<S, B> ErasedService for Erased<S>
-where
-    S: Service<AppRequest, Response = Response<B>, Error = Infallible> + Clone + Send + Sync,
-    S: 'static,
-    S::Future: Send + 'static,
-    B: http_body::Body<Data = Bytes> + Send + 'static,
-    B::Error: std::fmt::Display
-{
-    fn call_erased(
-        &self,
-        request: AppRequest
-    ) -> BoxFuture<AppResponse> {
-        let mut service = self.0.clone();
-        Box::pin(async move {
-            let Ok(response) = service.call(request).await;
-            response
-                .map(|body| body.map_err(|error| BoxError::from(error.to_string())).boxed_unsync())
-        })
-    }
-}
-
-fn register_service<S, B>(
-    state: &AppState,
-    service: S
-) -> registry::Result<()>
-where
-    S: Service<AppRequest, Response = Response<B>, Error = Infallible> + Clone + Send + Sync,
-    S: 'static,
-    S::Future: Send + 'static,
-    B: http_body::Body<Data = Bytes> + Send + 'static,
-    B::Error: std::fmt::Display
-{
-    let service: Arc<dyn ErasedService> = Arc::new(Erased(service));
-    // Static mounts, when the launch wrote them, answer before any route.
-    #[cfg(feature = "files")]
-    let service: Arc<dyn ErasedService> = match state
-        .registry_ref()
-        .resolve::<PythonApplicationService>()
-        .and_then(|application| application.files())
-    {
-        Some(files) => Arc::new(Erased(crate::files::wrap(files, service))),
-        None => service
-    };
-    state.registry_ref().insert(Arc::new(Application { service }))?;
-    Ok(())
-}
-
-/// Make sure something is registered to answer with.
-///
-/// An application that registered no routes is served by the interpreter
-/// alone — which is the whole of it until its first Rust route exists. Putting
-/// that case in the registry here rather than branching at every request keeps
-/// one path through the ingress.
-pub(crate) fn ensure_application(state: &AppState) -> registry::Result<()> {
-    if state.registry_ref().resolve::<Application>().is_none() {
-        register_service(state, python_service(state))?;
-    }
-    Ok(())
-}
-
-pub(crate) fn python_service(state: &AppState) -> PythonService {
-    state
-        .registry_ref()
-        .resolve::<PythonApplicationService>()
-        .expect("the runner registers the Python application before calling configure")
-        .service()
-}
-
 /// This application's routes in Rust, in front of its Python application.
 ///
 /// ```ignore
@@ -250,19 +87,11 @@ pub(crate) fn python_service(state: &AppState) -> PythonService {
 /// }
 /// ```
 ///
-/// Handed the function that builds the router, not the router: this crate
-/// calls it with the application's state, so the call reads as what it is
-/// rather than carrying a clone.
-///
-/// The router is yours and this crate has no opinion about it. What it does
-/// have is the rule the whole runner is: **the Python application is the
+/// The runner shell's `register_router`: **the Python application is the
 /// fallback.** A path your router does not declare, and a declared path
-/// reached with an undeclared method, both go to the interpreter — so the
-/// application stays the authority on what exists and what does not, and your
-/// routes only intercept. That wiring happens here rather than in your router,
-/// because it is what this runner is rather than something to decide per
-/// application. An application that does want to decide uses
-/// [`register_router_with`].
+/// reached with an undeclared method, both go to the interpreter, so the
+/// application stays the authority on what exists and your routes only
+/// intercept. The same routes serve under any Claviron runner.
 #[cfg(feature = "axum")]
 pub fn register_router<F>(
     state: &AppState,
@@ -271,50 +100,17 @@ pub fn register_router<F>(
 where
     F: FnOnce(AppState) -> claviron::axum::Router
 {
-    let router = router(state.clone());
-    #[cfg(feature = "bench")]
-    let router = {
-        tracing::info!(
-            "🐍 gufi bench routes mounted: /_gufi/rust and /_gufi/stats (feature \"bench\")"
-        );
-        router.merge(crate::bench::routes())
-    };
-
-    let python = python_service(state);
-    let unmatched = python.clone();
-    let router = router.fallback_service(python).method_not_allowed_fallback(
-        move |request: claviron::axum::extract::Request| {
-            let python = unmatched.clone();
-            async move { python.handle(request).await }
-        }
-    );
-    register_service(state, router)
-}
-
-/// This application's service, placing the interpreter yourself.
-///
-/// [`register_router`] applies the rule for you: the Python application is the
-/// fallback. Use this when the application wants to decide instead — its own
-/// 404 for a subtree, axum's, the interpreter somewhere other than the end.
-/// The builder is handed the Python application and puts it where it wants:
-///
-/// ```ignore
-/// gufi::register_router_with(state, |python| my_router().fallback_service(python))
-/// ```
-pub fn register_router_with<F, S, B>(
-    state: &AppState,
-    build: F
-) -> registry::Result<()>
-where
-    F: FnOnce(PythonService) -> S,
-    S: Service<AppRequest, Response = Response<B>, Error = Infallible> + Clone + Send + Sync,
-    S: 'static,
-    S::Future: Send + 'static,
-    B: http_body::Body<Data = Bytes> + Send + 'static,
-    B::Error: std::fmt::Display
-{
-    let service = build(python_service(state));
-    register_service(state, service)
+    claviron::runner::register_router(state, |state| {
+        let router = router(state);
+        #[cfg(feature = "bench")]
+        let router = {
+            tracing::info!(
+                "🐍 gufi bench routes mounted: /_gufi/rust and /_gufi/stats (feature \"bench\")"
+            );
+            router.merge(crate::bench::routes())
+        };
+        router
+    })
 }
 
 /// The Python application, as a service to put behind your own routes.

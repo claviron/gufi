@@ -177,7 +177,7 @@ pub struct GufiOptions {
     /// stands in front of. Written in the file only.
     #[cfg(feature = "files")]
     #[cfg_attr(feature = "cli", arg(skip))]
-    pub files: Option<crate::files::FilesSource>,
+    pub files: Option<claviron::runner::files::FilesSource>,
 
     /// Restart the workers when the application's Python changes: a rolling
     /// restart, requested by the master. Development only; needs two or more

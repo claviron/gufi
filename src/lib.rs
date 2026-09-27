@@ -16,8 +16,6 @@ mod broadcast;
 mod counter;
 #[cfg(feature = "django")]
 mod django;
-#[cfg(feature = "files")]
-mod files;
 mod http;
 #[cfg(feature = "log")]
 mod log;
@@ -41,7 +39,8 @@ pub use claviron::http::trust::Trust;
 #[cfg(feature = "tls")]
 pub use claviron::runner::Tls;
 #[cfg(feature = "files")]
-pub use files::FilesSource;
+pub use claviron::runner::files::FilesSource;
+pub use claviron::runner::{Owner, register_router_with};
 pub use http::{Bind, Protocols};
 #[cfg(feature = "broadcast")]
 pub use options::Broadcasting;
@@ -51,7 +50,4 @@ pub use options::{CONFIG_FILE, GufiOptions};
 pub use python::{Error, Result, Runner};
 #[cfg(feature = "axum")]
 pub use routing::register_router;
-pub use routing::{
-    AppRequest, AppResponse, PeerAddrs, PythonService, RequestBody, RequestScheme,
-    register_router_with
-};
+pub use routing::{AppRequest, AppResponse, PeerAddrs, PythonService, RequestBody, RequestScheme};

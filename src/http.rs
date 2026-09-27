@@ -28,6 +28,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use claviron::http::trust::Trust;
+use claviron::runner::Application;
 use claviron::runtime::{AppState, Provider, RunContext, Runnable, ServiceStartPolicy, registry};
 use http::{Request, Response, StatusCode};
 use hyper::body::Incoming;
@@ -37,7 +38,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, UnixListener};
 use tokio::task::JoinSet;
 
-use crate::routing::{AppRequest, AppResponse, Application, PeerAddrs, RequestScheme};
+use crate::routing::{AppRequest, AppResponse, PeerAddrs, RequestScheme};
 
 pub(crate) type Result<T> = std::result::Result<T, Error>;
 

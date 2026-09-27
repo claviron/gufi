@@ -34,6 +34,7 @@ use claviron::orbit::transport::{
     Endpoint, Exchange, ExchangeReply, FrameKind, Message, TRANSPORT_BUFFER_BYTES, TransportBodies,
     TransportSegment, frame_kind, parking_supported, read_message, write_message
 };
+use claviron::runner::Application;
 use claviron::runtime::{
     AppState, FleetIncarnation, Provider, RunContext, Runnable, ServiceStartPolicy, registry
 };
@@ -45,7 +46,7 @@ use tokio::task::JoinSet;
 
 use crate::application::PythonApplicationService;
 use crate::asgi::{HttpRequest, WebSocketDecision, WebSocketSession};
-use crate::routing::{Application, PeerAddrs, RequestScheme};
+use crate::routing::{PeerAddrs, RequestScheme};
 
 /// What this process's lane says serves its name. A PHP application given the
 /// same name is refused at its join rather than splitting this one's requests.

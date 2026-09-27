@@ -74,7 +74,7 @@ pub struct Runner {
     #[cfg(feature = "broadcast")]
     broadcasting: crate::options::Broadcasting,
     #[cfg(feature = "files")]
-    files: Option<crate::files::FilesSource>,
+    files: Option<claviron::runner::files::FilesSource>,
     #[cfg(feature = "watch")]
     watch: Option<Vec<PathBuf>>
 }
@@ -558,15 +558,24 @@ impl Runner {
                 // The broadcast service itself is registered by Claviron's own
                 // bootstrap whenever the feature is built in; what the launch
                 // adds is the application `claviron.broadcast` publishes to.
-                state.registry_ref().insert(Arc::new(PythonApplicationService::new(
+                let application = Arc::new(PythonApplicationService::new(
                     target,
                     root,
                     venv,
                     #[cfg(feature = "broadcast")]
-                    broadcasting,
-                    #[cfg(feature = "files")]
-                    files
-                )))?;
+                    broadcasting
+                ));
+                // The owner: whatever the application's routes do not claim.
+                claviron::runner::register_owner(
+                    state,
+                    claviron::runner::Owner::new(application.service())
+                )?;
+                state.registry_ref().insert(application)?;
+                // What stands in front of the routes.
+                let routing = claviron::runner::Routing::new();
+                #[cfg(feature = "files")]
+                let routing = routing.files(files);
+                state.registry_ref().insert(Arc::new(routing))?;
                 // The fleet's keyed counters: `claviron.counter(key)` in
                 // Python, `CounterProvider` in Rust.
                 claviron::orbit::register_counter(state)?;
@@ -574,7 +583,7 @@ impl Runner {
                 // Then the application's own registrations, which may compose
                 // the interpreter behind their routes.
                 configure(state)?;
-                crate::routing::ensure_application(state)?;
+                claviron::runner::ensure_application(state)?;
 
                 // Every door that was asked for, and they do not exclude each
                 // other: each is a runnable of its own, and all of them end at

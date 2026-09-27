@@ -26,10 +26,7 @@ pub(crate) struct PythonApplicationService {
     /// The launch's `broadcasting:` block: the application
     /// `claviron.broadcast` publishes to by default, and Channels' layer.
     #[cfg(feature = "broadcast")]
-    broadcasting: crate::options::Broadcasting,
-    /// Static mounts in front of the application, when the launch wrote them.
-    #[cfg(feature = "files")]
-    files: Option<Arc<crate::files::Files>>
+    broadcasting: crate::options::Broadcasting
 }
 
 impl PythonApplicationService {
@@ -37,8 +34,7 @@ impl PythonApplicationService {
         target: impl Into<String>,
         application_root: PathBuf,
         virtual_environment: PathBuf,
-        #[cfg(feature = "broadcast")] broadcasting: crate::options::Broadcasting,
-        #[cfg(feature = "files")] files: Option<Arc<crate::files::Files>>
+        #[cfg(feature = "broadcast")] broadcasting: crate::options::Broadcasting
     ) -> Self {
         Self {
             target: target.into(),
@@ -47,9 +43,7 @@ impl PythonApplicationService {
             handle: Arc::new(OnceLock::new()),
             running: Mutex::new(None),
             #[cfg(feature = "broadcast")]
-            broadcasting,
-            #[cfg(feature = "files")]
-            files
+            broadcasting
         }
     }
 
@@ -58,11 +52,6 @@ impl PythonApplicationService {
     /// ingress runs before that.
     pub(crate) fn service(&self) -> PythonService {
         PythonService::new(Arc::clone(&self.handle))
-    }
-
-    #[cfg(feature = "files")]
-    pub(crate) fn files(&self) -> Option<Arc<crate::files::Files>> {
-        self.files.clone()
     }
 
     /// The running interpreter's handle, once `boot()` has started it. An
