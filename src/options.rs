@@ -166,6 +166,14 @@ pub struct GufiOptions {
     #[cfg_attr(feature = "cli", arg(long))]
     pub venv: Option<PathBuf>,
 
+    /// The broadcast application `claviron.broadcast(...)` publishes to when
+    /// it names none, and the switch that starts the service: the
+    /// applications themselves — ids, keys, secrets — are `broadcast.yaml`
+    /// beside the application.
+    #[cfg(feature = "broadcast")]
+    #[cfg_attr(feature = "cli", arg(long))]
+    pub broadcast_application: Option<String>,
+
     /// How many worker processes serve this application. Zero is standalone.
     ///
     /// Each worker is a process with an interpreter of its own, which is how
@@ -289,6 +297,8 @@ impl GufiOptions {
             root: self.root.or(written.root),
             venv: self.venv.or(written.venv),
             workers: self.workers.or(written.workers),
+            #[cfg(feature = "broadcast")]
+            broadcast_application: self.broadcast_application.or(written.broadcast_application),
             // Policy is written down, never typed: no flag can have stated it.
             supervisor: written.supervisor,
             config: self.config

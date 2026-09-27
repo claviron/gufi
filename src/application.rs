@@ -22,21 +22,27 @@ pub(crate) struct PythonApplicationService {
     application_root: PathBuf,
     virtual_environment: PathBuf,
     handle: Arc<OnceLock<PythonApplicationHandle>>,
-    running: Mutex<Option<RunningPythonApplication>>
+    running: Mutex<Option<RunningPythonApplication>>,
+    /// The broadcast application `claviron.broadcast` publishes to by default.
+    #[cfg(feature = "broadcast")]
+    broadcast_application: Option<String>
 }
 
 impl PythonApplicationService {
     pub(crate) fn new(
         target: impl Into<String>,
         application_root: PathBuf,
-        virtual_environment: PathBuf
+        virtual_environment: PathBuf,
+        #[cfg(feature = "broadcast")] broadcast_application: Option<String>
     ) -> Self {
         Self {
             target: target.into(),
             application_root,
             virtual_environment,
             handle: Arc::new(OnceLock::new()),
-            running: Mutex::new(None)
+            running: Mutex::new(None),
+            #[cfg(feature = "broadcast")]
+            broadcast_application
         }
     }
 
@@ -96,6 +102,14 @@ impl Provider<AppState> for PythonApplicationService {
             state.registry_ref().resolve::<CounterProvider>().and_then(|provider| provider.handle())
         {
             application = application.counters(table);
+        }
+
+        #[cfg(feature = "broadcast")]
+        if let (Some(default_application), Some(service)) = (
+            self.broadcast_application.clone(),
+            state.registry_ref().resolve::<claviron::broadcast::BroadcastService>()
+        ) {
+            application = application.broadcast(service, default_application);
         }
 
         let running =

@@ -88,6 +88,13 @@ legacy-linux = ["claviron/legacy-linux"]
 # application did not write do not belong in production by accident.
 bench = ["axum"]
 metrics = ["claviron/metrics"]
+# Claviron's broadcast service in this process: Pusher-compatible channels a
+# browser subscribes to with pusher-js or Laravel Echo, reached over Orbit, and
+# `claviron.broadcast(...)` for the application to publish in process, with no
+# HTTP round trip. Built in, the service runs and reads `broadcast.yaml` beside
+# the application; off by default, so an application that broadcasts nothing
+# carries none of it.
+broadcast = ["claviron/broadcast"]
 
 # Claviron's release settings, so what this crate measures on its own — its
 # benches — is built the way the binaries that embed it are. A library's

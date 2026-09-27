@@ -448,7 +448,9 @@ pub struct PythonApplication {
     module_paths: Vec<PathBuf>,
     virtual_environment: Option<PathBuf>,
     invocations: Option<Arc<InvocationRouter>>,
-    counters: Option<Arc<claviron::orbit::Counter>>
+    counters: Option<Arc<claviron::orbit::Counter>>,
+    #[cfg(feature = "broadcast")]
+    broadcast: Option<crate::broadcast::Publisher>
 }
 
 impl PythonApplication {
@@ -458,7 +460,9 @@ impl PythonApplication {
             module_paths: Vec::new(),
             virtual_environment: None,
             invocations: None,
-            counters: None
+            counters: None,
+            #[cfg(feature = "broadcast")]
+            broadcast: None
         })
     }
 
@@ -487,6 +491,18 @@ impl PythonApplication {
         router: Arc<InvocationRouter>
     ) -> Self {
         self.invocations = Some(router);
+        self
+    }
+
+    /// The broadcast service, as `claviron.broadcast(channel, event, data)`,
+    /// publishing to `default_application` unless a call names another.
+    #[cfg(feature = "broadcast")]
+    pub fn broadcast(
+        mut self,
+        service: Arc<claviron::broadcast::BroadcastService>,
+        default_application: String
+    ) -> Self {
+        self.broadcast = Some(crate::broadcast::Publisher::new(service, default_application));
         self
     }
 
@@ -1568,7 +1584,13 @@ fn run_application(
     Python::attach(|py| {
         configure_python(py, &definition)?;
 
-        install_claviron_module(py, definition.invocations, definition.counters)?;
+        install_claviron_module(
+            py,
+            definition.invocations,
+            definition.counters,
+            #[cfg(feature = "broadcast")]
+            definition.broadcast
+        )?;
 
         let module =
             py.import(&definition.target.module).map_err(|error| python_error(py, error))?;
@@ -1652,9 +1674,14 @@ impl PythonInvocationBridge {
 fn install_claviron_module(
     py: Python<'_>,
     router: Option<Arc<InvocationRouter>>,
-    counters: Option<Arc<claviron::orbit::Counter>>
+    counters: Option<Arc<claviron::orbit::Counter>>,
+    #[cfg(feature = "broadcast")] broadcast: Option<crate::broadcast::Publisher>
 ) -> Result<()> {
-    if router.is_none() && counters.is_none() {
+    #[cfg(feature = "broadcast")]
+    let nothing = router.is_none() && counters.is_none() && broadcast.is_none();
+    #[cfg(not(feature = "broadcast"))]
+    let nothing = router.is_none() && counters.is_none();
+    if nothing {
         return Ok(());
     }
     let module = PyModule::new(py, "claviron").map_err(|error| python_error(py, error))?;
@@ -1674,6 +1701,13 @@ fn install_claviron_module(
         module
             .add_class::<crate::counter::PythonCounter>()
             .map_err(|error| python_error(py, error))?;
+    }
+
+    #[cfg(feature = "broadcast")]
+    if let Some(publisher) = broadcast {
+        let broadcast = Py::new(py, crate::broadcast::PythonBroadcast::new(publisher))
+            .map_err(|error| python_error(py, error))?;
+        module.add("broadcast", broadcast).map_err(|error| python_error(py, error))?;
     }
 
     let modules = py

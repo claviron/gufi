@@ -10,6 +10,8 @@
 pub mod bench;
 
 mod application;
+#[cfg(feature = "broadcast")]
+mod broadcast;
 mod counter;
 pub mod asgi;
 mod http;

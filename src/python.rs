@@ -68,7 +68,9 @@ pub struct Runner {
     config_path: Option<PathBuf>,
     supervisor: Option<claviron::supervisor::SupervisorConfig>,
     #[cfg(feature = "tls")]
-    tls: Option<crate::Tls>
+    tls: Option<crate::Tls>,
+    #[cfg(feature = "broadcast")]
+    broadcast_application: Option<String>
 }
 
 impl Runner {
@@ -86,7 +88,9 @@ impl Runner {
             config_path: None,
             supervisor: None,
             #[cfg(feature = "tls")]
-            tls: None
+            tls: None,
+            #[cfg(feature = "broadcast")]
+            broadcast_application: None
         }
     }
 
@@ -249,8 +253,14 @@ impl Runner {
             root,
             venv,
             config,
-            supervisor
+            supervisor,
+            #[cfg(feature = "broadcast")]
+            broadcast_application
         } = options;
+        #[cfg(feature = "broadcast")]
+        if let Some(application) = broadcast_application {
+            self.broadcast_application = Some(application);
+        }
         if let Some(path) = config {
             self.config_path = Some(path);
         }
@@ -331,6 +341,8 @@ impl Runner {
         let tls = self.tls;
         let orbit = self.orbit;
         let workers = self.workers;
+        #[cfg(feature = "broadcast")]
+        let broadcast_application = self.broadcast_application.clone();
         // A process with no door would boot an interpreter nothing can reach.
         // The first thing a Python developer runs has no arguments, so that
         // case is a local listener rather than an error.
@@ -380,7 +392,9 @@ impl Runner {
             config: None,
             // Carried: a worker registers the same policy source its master
             // did, so the fleet is supervised by one written-down decision.
-            supervisor: Some(supervisor.clone())
+            supervisor: Some(supervisor.clone()),
+            #[cfg(feature = "broadcast")]
+            broadcast_application: broadcast_application.clone()
         }
         .encode()
         .map_err(Error::Registry)?;
@@ -440,6 +454,12 @@ impl Runner {
                     None
                 };
 
+                // A worker's is its master's, carried in the launch.
+                #[cfg(feature = "broadcast")]
+                let broadcast_application = match inherited.as_ref() {
+                    Some(options) => options.broadcast_application.clone(),
+                    None => broadcast_application.clone()
+                };
                 let (orbit, binds, protocols, trusted, application_name, root, venv) =
                     match inherited {
                         None => (
@@ -471,9 +491,16 @@ impl Runner {
                         }
                     };
 
-                state
-                    .registry_ref()
-                    .insert(Arc::new(PythonApplicationService::new(target, root, venv)))?;
+                // The broadcast service itself is registered by Claviron's own
+                // bootstrap whenever the feature is built in; what the launch
+                // adds is the application `claviron.broadcast` publishes to.
+                state.registry_ref().insert(Arc::new(PythonApplicationService::new(
+                    target,
+                    root,
+                    venv,
+                    #[cfg(feature = "broadcast")]
+                    broadcast_application
+                )))?;
                 // The fleet's keyed counters: `claviron.counter(key)` in
                 // Python, `CounterProvider` in Rust.
                 claviron::orbit::register_counter(state)?;

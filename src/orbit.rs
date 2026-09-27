@@ -122,6 +122,13 @@ impl Runnable<AppState> for OrbitIngress {
         // A WebSocket goes to Python directly: the application's own routes
         // answer HTTP, and there is no upgrade on this side of the slot.
         let python = state.registry_ref().resolve::<PythonApplicationService>();
+        // Except a Pusher client's, when this process runs the broadcast
+        // service: that one is a broadcast session, not the application's.
+        #[cfg(feature = "broadcast")]
+        let broadcast: BroadcastRoute =
+            state.registry_ref().resolve::<claviron::broadcast::BroadcastService>();
+        #[cfg(not(feature = "broadcast"))]
+        let broadcast: BroadcastRoute = ();
         // The master's count of this worker slot's lives. It stamps the lane
         // and the streams, so a death report that names the process before
         // this one cannot end this one's work.
@@ -165,6 +172,7 @@ impl Runnable<AppState> for OrbitIngress {
                             lane,
                             Arc::clone(&application),
                             python.clone(),
+                            broadcast.clone(),
                             Arc::clone(&segment),
                             Arc::clone(&bodies)
                         ));
@@ -246,12 +254,20 @@ fn spawn_reader(
         .map_err(|error| registry::Error::msg(format!("lane reader thread: {error}")))
 }
 
+/// The broadcast service a Pusher WebSocket over Orbit is served by, when this
+/// process runs one. Nothing when the feature is off.
+#[cfg(feature = "broadcast")]
+type BroadcastRoute = Option<Arc<claviron::broadcast::BroadcastService>>;
+#[cfg(not(feature = "broadcast"))]
+type BroadcastRoute = ();
+
 /// One exchange, from the frame that arrived to the reply that leaves.
 async fn serve(
     frame: Vec<u8>,
     lane: usize,
     application: Arc<Application>,
     python: Option<Arc<PythonApplicationService>>,
+    broadcast: BroadcastRoute,
     segment: Arc<TransportSegment>,
     bodies: Arc<TransportBodies>
 ) {
@@ -305,7 +321,7 @@ async fn serve(
     };
 
     if exchange.upgrade {
-        serve_websocket(&exchange, origin, body, python, &segment).await;
+        serve_websocket(&exchange, origin, body, python, broadcast, &segment).await;
         return;
     }
 
@@ -447,6 +463,7 @@ async fn serve_websocket(
     origin: usize,
     endpoint: Option<Endpoint>,
     python: Option<Arc<PythonApplicationService>>,
+    broadcast: BroadcastRoute,
     segment: &TransportSegment
 ) {
     let correlation = exchange.correlation;
@@ -461,6 +478,38 @@ async fn serve_websocket(
             Err(error) => tracing::debug!(correlation, "🛰 ✗ WebSocket answer: {error}")
         }
     };
+
+    // A Pusher client's WebSocket is a broadcast session, served here and not
+    // by the application. The edge speaks the protocol; the slot carries its
+    // messages, which is what the session reads and writes.
+    #[cfg(feature = "broadcast")]
+    if let Some(service) = broadcast.as_deref()
+        && let Some(outcome) = crate::broadcast::accept(service, exchange)
+    {
+        let (session, Some(endpoint)) = (outcome, endpoint) else {
+            answer(400, Vec::new());
+            return;
+        };
+        let session = match session {
+            Ok(session) => session,
+            Err(status) => {
+                answer(status, Vec::new());
+                return;
+            }
+        };
+        // The session is held before it is acknowledged, so a 101 never
+        // announces one that could not start.
+        answer(101, Vec::new());
+        let _activity = claviron::runtime::activity::ACTIVITY.open_session();
+        if let Err(error) =
+            session.run(claviron::broadcast::stream::OrbitMessageStream::new(endpoint)).await
+        {
+            tracing::debug!(correlation, "🛰 broadcast session ended: {error}");
+        }
+        return;
+    }
+    #[cfg(not(feature = "broadcast"))]
+    let () = broadcast;
 
     let (Some(endpoint), Some(handle)) = (endpoint, python.and_then(|python| python.handle()))
     else {
