@@ -70,7 +70,7 @@ pub struct Runner {
     #[cfg(feature = "tls")]
     tls: Option<crate::Tls>,
     #[cfg(feature = "broadcast")]
-    broadcast_application: Option<String>
+    broadcasting: crate::options::Broadcasting
 }
 
 impl Runner {
@@ -90,7 +90,7 @@ impl Runner {
             #[cfg(feature = "tls")]
             tls: None,
             #[cfg(feature = "broadcast")]
-            broadcast_application: None
+            broadcasting: crate::options::Broadcasting::default()
         }
     }
 
@@ -258,8 +258,8 @@ impl Runner {
             broadcasting
         } = options;
         #[cfg(feature = "broadcast")]
-        if let Some(application) = broadcasting.and_then(|broadcasting| broadcasting.application) {
-            self.broadcast_application = Some(application);
+        if let Some(broadcasting) = broadcasting {
+            self.broadcasting = broadcasting;
         }
         if let Some(path) = config {
             self.config_path = Some(path);
@@ -342,7 +342,7 @@ impl Runner {
         let orbit = self.orbit;
         let workers = self.workers;
         #[cfg(feature = "broadcast")]
-        let broadcast_application = self.broadcast_application.clone();
+        let broadcasting = self.broadcasting.clone();
         // A process with no door would boot an interpreter nothing can reach.
         // The first thing a Python developer runs has no arguments, so that
         // case is a local listener rather than an error.
@@ -394,9 +394,7 @@ impl Runner {
             // did, so the fleet is supervised by one written-down decision.
             supervisor: Some(supervisor.clone()),
             #[cfg(feature = "broadcast")]
-            broadcasting: Some(crate::options::Broadcasting {
-                application: broadcast_application.clone()
-            })
+            broadcasting: Some(broadcasting.clone())
         }
         .encode()
         .map_err(Error::Registry)?;
@@ -458,11 +456,9 @@ impl Runner {
 
                 // A worker's is its master's, carried in the launch.
                 #[cfg(feature = "broadcast")]
-                let broadcast_application = match inherited.as_ref() {
-                    Some(options) => {
-                        options.broadcasting.as_ref().and_then(|b| b.application.clone())
-                    }
-                    None => broadcast_application.clone()
+                let broadcasting = match inherited.as_ref() {
+                    Some(options) => options.broadcasting.clone().unwrap_or_default(),
+                    None => broadcasting.clone()
                 };
                 let (orbit, binds, protocols, trusted, application_name, root, venv) =
                     match inherited {
@@ -503,7 +499,7 @@ impl Runner {
                     root,
                     venv,
                     #[cfg(feature = "broadcast")]
-                    broadcast_application
+                    broadcasting
                 )))?;
                 // The fleet's keyed counters: `claviron.counter(key)` in
                 // Python, `CounterProvider` in Rust.

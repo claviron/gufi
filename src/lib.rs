@@ -10,10 +10,12 @@
 pub mod bench;
 
 mod application;
+pub mod asgi;
 #[cfg(feature = "broadcast")]
 mod broadcast;
 mod counter;
-pub mod asgi;
+#[cfg(feature = "django")]
+mod django;
 mod http;
 pub(crate) mod options;
 mod orbit;
@@ -31,14 +33,17 @@ pub mod websocket;
 #[cfg(feature = "axum")]
 pub use claviron::axum;
 pub use http::{Bind, Protocols};
-pub use options::{CONFIG_FILE, GufiOptions};
 #[cfg(feature = "broadcast")]
 pub use options::Broadcasting;
+#[cfg(feature = "django")]
+pub use options::Channels;
+pub use options::{CONFIG_FILE, GufiOptions};
 pub use python::{Error, Result, Runner};
 #[cfg(feature = "axum")]
 pub use routing::register_router;
 pub use routing::{
-    AppRequest, AppResponse, PeerAddrs, PythonService, RequestBody, RequestScheme, register_router_with
+    AppRequest, AppResponse, PeerAddrs, PythonService, RequestBody, RequestScheme,
+    register_router_with
 };
 #[cfg(feature = "tls")]
 pub use tls::Tls;

@@ -23,9 +23,10 @@ pub(crate) struct PythonApplicationService {
     virtual_environment: PathBuf,
     handle: Arc<OnceLock<PythonApplicationHandle>>,
     running: Mutex<Option<RunningPythonApplication>>,
-    /// The broadcast application `claviron.broadcast` publishes to by default.
+    /// The launch's `broadcasting:` block: the application
+    /// `claviron.broadcast` publishes to by default, and Channels' layer.
     #[cfg(feature = "broadcast")]
-    broadcast_application: Option<String>
+    broadcasting: crate::options::Broadcasting
 }
 
 impl PythonApplicationService {
@@ -33,7 +34,7 @@ impl PythonApplicationService {
         target: impl Into<String>,
         application_root: PathBuf,
         virtual_environment: PathBuf,
-        #[cfg(feature = "broadcast")] broadcast_application: Option<String>
+        #[cfg(feature = "broadcast")] broadcasting: crate::options::Broadcasting
     ) -> Self {
         Self {
             target: target.into(),
@@ -42,7 +43,7 @@ impl PythonApplicationService {
             handle: Arc::new(OnceLock::new()),
             running: Mutex::new(None),
             #[cfg(feature = "broadcast")]
-            broadcast_application
+            broadcasting
         }
     }
 
@@ -105,11 +106,19 @@ impl Provider<AppState> for PythonApplicationService {
         }
 
         #[cfg(feature = "broadcast")]
-        if let (Some(default_application), Some(service)) = (
-            self.broadcast_application.clone(),
+        if let Some(service) =
             state.registry_ref().resolve::<claviron::broadcast::BroadcastService>()
-        ) {
-            application = application.broadcast(service, default_application);
+        {
+            if let Some(default_application) = self.broadcasting.application.clone() {
+                application = application.broadcast(Arc::clone(&service), default_application);
+            }
+            #[cfg(feature = "django")]
+            if let Some(settings) = &self.broadcasting.channels {
+                application = application.channels(crate::django::channels::ChannelLayer::new(
+                    service.groups(),
+                    settings
+                ));
+            }
         }
 
         let running =

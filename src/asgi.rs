@@ -19,6 +19,7 @@ use tokio::sync::{mpsc as chunks, oneshot};
 
 const APPLICATION_DRIVER: &str = r#"
 import asyncio
+import sys
 import traceback
 
 
@@ -234,6 +235,10 @@ async def drive(application, control):
     # of their body, by id: the doorbell names them and the loop resolves
     # their waits here, on its own thread.
     waiters = {}
+    # Django Channels' layer, when gufi installed it, waits in the same table.
+    channel_layer = sys.modules.get("claviron.channels")
+    if channel_layer is not None:
+        channel_layer._waiters = waiters
 
     def answer():
         exchanges, ready, last = control.take_exchanges()
@@ -450,7 +455,9 @@ pub struct PythonApplication {
     invocations: Option<Arc<InvocationRouter>>,
     counters: Option<Arc<claviron::orbit::Counter>>,
     #[cfg(feature = "broadcast")]
-    broadcast: Option<crate::broadcast::Publisher>
+    broadcast: Option<crate::broadcast::Publisher>,
+    #[cfg(feature = "django")]
+    channels: Option<crate::django::channels::ChannelLayer>
 }
 
 impl PythonApplication {
@@ -462,7 +469,9 @@ impl PythonApplication {
             invocations: None,
             counters: None,
             #[cfg(feature = "broadcast")]
-            broadcast: None
+            broadcast: None,
+            #[cfg(feature = "django")]
+            channels: None
         })
     }
 
@@ -506,6 +515,17 @@ impl PythonApplication {
         self
     }
 
+    /// Django Channels' layer over the broadcast service's groups, as
+    /// `claviron.channels.OrbitChannelLayer`.
+    #[cfg(feature = "django")]
+    pub(crate) fn channels(
+        mut self,
+        layer: crate::django::channels::ChannelLayer
+    ) -> Self {
+        self.channels = Some(layer);
+        self
+    }
+
     /// The fleet's counter table, as `claviron.counter(key)`.
     pub fn counters(
         mut self,
@@ -534,7 +554,10 @@ impl PythonApplication {
         let (startup_tx, startup_rx) = mpsc::sync_channel(1);
         let handle = thread::Builder::new()
             .name("claviron-asgi".to_owned())
-            .spawn(move || run_application(definition, doorbell, startup_tx))
+            .spawn({
+                let commands = commands.clone();
+                move || run_application(definition, commands, doorbell, startup_tx)
+            })
             .map_err(|error| Error::Python(error.to_string()))?;
 
         match startup_rx.recv() {
@@ -1578,6 +1601,7 @@ impl Drop for WebSocketExchange {
 
 fn run_application(
     definition: PythonApplication,
+    commands: Commands,
     doorbell: Doorbell,
     startup: mpsc::SyncSender<std::result::Result<(), String>>
 ) -> Result<()> {
@@ -1589,8 +1613,11 @@ fn run_application(
             definition.invocations,
             definition.counters,
             #[cfg(feature = "broadcast")]
-            definition.broadcast
+            definition.broadcast,
+            #[cfg(feature = "django")]
+            definition.channels.map(|layer| (layer, commands.clone()))
         )?;
+        drop(commands);
 
         let module =
             py.import(&definition.target.module).map_err(|error| python_error(py, error))?;
@@ -1675,12 +1702,19 @@ fn install_claviron_module(
     py: Python<'_>,
     router: Option<Arc<InvocationRouter>>,
     counters: Option<Arc<claviron::orbit::Counter>>,
-    #[cfg(feature = "broadcast")] broadcast: Option<crate::broadcast::Publisher>
+    #[cfg(feature = "broadcast")] broadcast: Option<crate::broadcast::Publisher>,
+    #[cfg(feature = "django")] channels: Option<(crate::django::channels::ChannelLayer, Commands)>
 ) -> Result<()> {
+    #[allow(unused_mut)]
+    let mut nothing = router.is_none() && counters.is_none();
     #[cfg(feature = "broadcast")]
-    let nothing = router.is_none() && counters.is_none() && broadcast.is_none();
-    #[cfg(not(feature = "broadcast"))]
-    let nothing = router.is_none() && counters.is_none();
+    {
+        nothing &= broadcast.is_none();
+    }
+    #[cfg(feature = "django")]
+    {
+        nothing &= channels.is_none();
+    }
     if nothing {
         return Ok(());
     }
@@ -1716,8 +1750,34 @@ fn install_claviron_module(
         .map_err(|error| python_error(py, error))?;
     let modules =
         modules.cast_into::<PyDict>().map_err(|error| Error::Python(error.to_string()))?;
-    PyDictMethods::set_item(&modules, "claviron", module)
+    PyDictMethods::set_item(&modules, "claviron", &module)
         .map_err(|error| python_error(py, error))?;
+
+    // `claviron.channels`, importable by the dotted path Django settings name.
+    // Its Python needs `claviron._channels` in place, so it runs after the
+    // module above is in `sys.modules`.
+    #[cfg(feature = "django")]
+    if let Some((layer, commands)) = channels {
+        use crate::django::channels::{ChannelCore, MODULE_SOURCE};
+
+        let ring: crate::django::channels::Ring =
+            Arc::new(move |id| drop(commands.send(ApplicationCommand::Ready(id))));
+        let core = ChannelCore::new(
+            layer,
+            ring,
+            Arc::new(|| EXCHANGE_IDS.fetch_add(1, Ordering::Relaxed))
+        );
+        let core = Py::new(py, core).map_err(|error| python_error(py, error))?;
+        module.add("_channels", core).map_err(|error| python_error(py, error))?;
+        let code = CString::new(MODULE_SOURCE).expect("channel layer source has no NUL bytes");
+        let filename = CString::new("<claviron-channels>").unwrap();
+        let name = CString::new("claviron.channels").unwrap();
+        let channels = PyModule::from_code(py, &code, &filename, &name)
+            .map_err(|error| python_error(py, error))?;
+        module.add("channels", &channels).map_err(|error| python_error(py, error))?;
+        PyDictMethods::set_item(&modules, "claviron.channels", channels)
+            .map_err(|error| python_error(py, error))?;
+    }
     Ok(())
 }
 

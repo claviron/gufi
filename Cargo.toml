@@ -95,6 +95,11 @@ metrics = ["claviron/metrics"]
 # the application; off by default, so an application that broadcasts nothing
 # carries none of it.
 broadcast = ["claviron/broadcast"]
+# Django additions, under `src/django/`: Channels' channel layer
+# (`claviron.channels.OrbitChannelLayer`) over the broadcast service's groups,
+# configured by `broadcasting.channels` in gufi.yaml. The project installs
+# `channels` and `msgpack` itself.
+django = ["broadcast"]
 
 # Claviron's release settings, so what this crate measures on its own — its
 # benches — is built the way the binaries that embed it are. A library's
