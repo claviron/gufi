@@ -128,7 +128,7 @@ impl Runnable<AppState> for OrbitIngress {
         let broadcast: BroadcastRoute =
             state.registry_ref().resolve::<claviron::broadcast::BroadcastService>();
         #[cfg(not(feature = "broadcast"))]
-        let broadcast: BroadcastRoute = ();
+        let broadcast = BroadcastRoute;
         // The master's count of this worker slot's lives. It stamps the lane
         // and the streams, so a death report that names the process before
         // this one cannot end this one's work.
@@ -259,7 +259,8 @@ fn spawn_reader(
 #[cfg(feature = "broadcast")]
 type BroadcastRoute = Option<Arc<claviron::broadcast::BroadcastService>>;
 #[cfg(not(feature = "broadcast"))]
-type BroadcastRoute = ();
+#[derive(Clone)]
+struct BroadcastRoute;
 
 /// One exchange, from the frame that arrived to the reply that leaves.
 async fn serve(
@@ -509,7 +510,7 @@ async fn serve_websocket(
         return;
     }
     #[cfg(not(feature = "broadcast"))]
-    let () = broadcast;
+    let BroadcastRoute = broadcast;
 
     let (Some(endpoint), Some(handle)) = (endpoint, python.and_then(|python| python.handle()))
     else {
