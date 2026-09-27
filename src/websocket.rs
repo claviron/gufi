@@ -1,10 +1,10 @@
 //! WebSocket on gufi's own listener.
 //!
-//! Over Orbit the edge speaks the WebSocket protocol and gufi sees whole
-//! messages; on its own listener gufi speaks it itself, with `fastwebsockets`.
-//! Either way the application answers the handshake and exchanges the same
-//! [`Message`]s, so neither a Python nor a Rust handler knows which door the
-//! socket came through.
+//! The protocol is the runner shell's (`claviron::runner::websocket`): it
+//! answers the handshake, joins fragments, answers pings and hands whole
+//! [`Message`]s over, the same ones a WebSocket over Orbit carries. What is
+//! Python's is the decision — the ASGI application accepts or refuses — and
+//! where the messages go.
 
 use std::convert::Infallible;
 use std::future::Future;
@@ -13,15 +13,25 @@ use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
-pub use claviron::orbit::transport::Message;
-pub use fastwebsockets;
-use fastwebsockets::{FragmentCollector, Frame, OpCode, Payload, WebSocket};
+pub use claviron::runner::websocket::Message;
+use claviron::runner::websocket::{Deliver, accept, is_websocket};
 use http::{Request, StatusCode};
-use hyper::upgrade::Upgraded;
-use hyper_util::rt::TokioIo;
 
-use crate::asgi::{HttpRequest, PythonApplicationHandle, WebSocketDecision, WebSocketSession};
+use crate::asgi::{PythonApplicationHandle, WebSocketDecision, WebSocketInbound, WebSocketSession};
 use crate::routing::{AppRequest, AppResponse, full_body};
+
+impl Deliver for WebSocketInbound {
+    fn deliver(
+        &self,
+        message: Message
+    ) -> impl Future<Output = bool> + Send {
+        WebSocketInbound::deliver(self, message)
+    }
+
+    fn end(&self) {
+        WebSocketInbound::end(self);
+    }
+}
 
 /// The owner's answer to a request asking to take its connection over: a
 /// WebSocket goes to the application, anything else is not one this serves.
@@ -54,7 +64,7 @@ impl tower_service::Service<AppRequest> for Upgrades {
     ) -> Self::Future {
         let python = self.python.get().cloned();
         Box::pin(async move {
-            if !fastwebsockets::upgrade::is_upgrade_request(&request) {
+            if !is_websocket(&request) {
                 return Ok(status(StatusCode::NOT_IMPLEMENTED));
             }
             let Some(python) = python else {
@@ -64,121 +74,19 @@ impl tower_service::Service<AppRequest> for Upgrades {
             let mut scope = crate::routing::scope(&parts);
             // The handshake is HTTP/1.1 whatever the connection negotiated.
             scope.http_version = "1.1".to_owned();
-            Ok(serve(Request::from_parts(parts, body), scope, &python).await)
+            let Ok(WebSocketSession { decision, inbound, outbound }) =
+                python.handle_websocket(scope)
+            else {
+                return Ok(status(StatusCode::SERVICE_UNAVAILABLE));
+            };
+            let headers = match decision.await {
+                Ok(WebSocketDecision::Accept { headers }) => headers,
+                // Refused, or the application ended first: ASGI's answer is 403.
+                _ => return Ok(status(StatusCode::FORBIDDEN))
+            };
+            Ok(accept(Request::from_parts(parts, body), headers, inbound, outbound))
         })
     }
-}
-
-/// Ask the application, answer the handshake, and serve the socket on a task
-/// of its own once the connection is upgraded.
-async fn serve(
-    mut request: AppRequest,
-    scope: HttpRequest,
-    python: &PythonApplicationHandle
-) -> AppResponse {
-    let Ok(WebSocketSession { decision, inbound, outbound }) = python.handle_websocket(scope)
-    else {
-        return status(StatusCode::SERVICE_UNAVAILABLE);
-    };
-    let headers = match decision.await {
-        Ok(WebSocketDecision::Accept { headers }) => headers,
-        // Refused, or the application ended first: ASGI's answer is 403.
-        _ => return status(StatusCode::FORBIDDEN)
-    };
-    let (response, upgrade) = match fastwebsockets::upgrade::upgrade(&mut request) {
-        Ok(upgrade) => upgrade,
-        Err(error) => {
-            tracing::debug!("🐍 WebSocket handshake refused: {error}");
-            inbound.end();
-            return status(StatusCode::BAD_REQUEST);
-        }
-    };
-    let mut response = response.map(|_| full_body(Bytes::new()));
-    for (name, value) in headers {
-        if let (Ok(name), Ok(value)) =
-            (http::HeaderName::from_bytes(&name), http::HeaderValue::from_bytes(&value))
-        {
-            response.headers_mut().append(name, value);
-        }
-    }
-    tokio::spawn(async move {
-        match upgrade.await {
-            Ok(socket) => pump(socket, inbound, outbound).await,
-            Err(error) => {
-                tracing::debug!("🐍 WebSocket upgrade failed: {error}");
-                inbound.end();
-            }
-        }
-    });
-    response
-}
-
-/// Speak the protocol with the client and pass whole messages to and from the
-/// application: fragments joined, pings answered, closes echoed here.
-async fn pump(
-    mut socket: WebSocket<TokioIo<Upgraded>>,
-    inbound: crate::asgi::WebSocketInbound,
-    mut outbound: tokio::sync::mpsc::Receiver<Message>
-) {
-    socket.set_auto_pong(true);
-    socket.set_auto_close(true);
-    let mut socket = FragmentCollector::new(socket);
-    loop {
-        tokio::select! {
-            frame = socket.read_frame() => {
-                let message = match frame {
-                    Ok(frame) => match frame.opcode {
-                        OpCode::Text => match String::from_utf8(frame.payload.to_vec()) {
-                            Ok(text) => Message::Text(text),
-                            Err(_) => Message::Close { code: 1007, reason: String::new() }
-                        },
-                        OpCode::Binary => Message::Binary(frame.payload.to_vec()),
-                        OpCode::Close => {
-                            let (code, reason) = close_details(&frame.payload);
-                            Message::Close { code, reason }
-                        }
-                        _ => continue
-                    },
-                    Err(_) => Message::Close { code: 1006, reason: String::new() }
-                };
-                let closing = matches!(message, Message::Close { .. });
-                if !inbound.deliver(message).await || closing {
-                    break;
-                }
-            }
-            message = outbound.recv() => {
-                let sent = match message {
-                    Some(Message::Text(text)) => {
-                        socket.write_frame(Frame::text(Payload::Owned(text.into_bytes()))).await
-                    }
-                    Some(Message::Binary(bytes)) => {
-                        socket.write_frame(Frame::binary(Payload::Owned(bytes))).await
-                    }
-                    Some(Message::Close { code, reason }) => {
-                        let _ = socket.write_frame(Frame::close(code, reason.as_bytes())).await;
-                        break;
-                    }
-                    None => {
-                        let _ = socket.write_frame(Frame::close(1011, b"")).await;
-                        break;
-                    }
-                };
-                if sent.is_err() {
-                    break;
-                }
-            }
-        }
-    }
-    inbound.end();
-}
-
-/// A close frame's code and reason; 1005 when it carries none.
-fn close_details(payload: &[u8]) -> (u16, String) {
-    if payload.len() < 2 {
-        return (1005, String::new());
-    }
-    let code = u16::from_be_bytes([payload[0], payload[1]]);
-    (code, String::from_utf8_lossy(&payload[2..]).into_owned())
 }
 
 fn status(status: StatusCode) -> AppResponse {
