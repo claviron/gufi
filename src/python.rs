@@ -3,11 +3,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use claviron::Server;
-use claviron::http::trust::{Network, Trust};
-use claviron::runner::{Bind, Protocols, RunnerOptions};
+use claviron::http::trust::Network;
+use claviron::runner::{Bind, Protocols, launch};
 use claviron::runtime::{AppState, registry};
 
 use crate::application::PythonApplicationService;
+use crate::options::Launch;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -32,83 +33,35 @@ pub enum Error {
 /// By convention the process working directory is the application root and
 /// `.venv` beneath it is the Python environment. Builder methods can replace
 /// every environment-specific value without changing the application entry
-/// point.
+/// point. What they set is the launch itself — the one a worker inherits.
 pub struct Runner {
     target: String,
-    application_name: Option<String>,
-    application_root: Option<PathBuf>,
-    virtual_environment: Option<PathBuf>,
-    orbit: bool,
-    binds: Vec<Bind>,
-    protocols: Protocols,
-    trusted: Vec<Network>,
-    workers: u8,
-    config_path: Option<PathBuf>,
-    supervisor: Option<claviron::supervisor::SupervisorConfig>,
-    #[cfg(feature = "tls")]
-    tls: Option<crate::Tls>,
-    #[cfg(feature = "broadcast")]
-    broadcasting: crate::options::Broadcasting,
-    #[cfg(feature = "files")]
-    files: Option<claviron::runner::files::FilesSource>,
-    #[cfg(feature = "watch")]
-    watch: Option<Vec<PathBuf>>,
-    /// The request policy and the bounds on work taken, as the launch wrote
-    /// them: the only fields of this that are read.
-    limits: RunnerOptions
+    launch: Launch,
+    config_path: Option<PathBuf>
 }
 
 impl Runner {
     pub fn new(target: impl Into<String>) -> Self {
-        Self {
-            target: target.into(),
-            application_name: None,
-            application_root: None,
-            virtual_environment: None,
-            orbit: false,
-            binds: Vec::new(),
-            protocols: Protocols::default(),
-            trusted: Vec::new(),
-            workers: 0,
-            config_path: None,
-            supervisor: None,
-            #[cfg(feature = "tls")]
-            tls: None,
-            #[cfg(feature = "broadcast")]
-            broadcasting: crate::options::Broadcasting::default(),
-            #[cfg(feature = "files")]
-            files: None,
-            #[cfg(feature = "watch")]
-            watch: None,
-            limits: RunnerOptions::default()
-        }
+        Self { target: target.into(), launch: Launch::default(), config_path: None }
     }
 
     /// What this application is called.
     ///
     /// The only name there is. It defaults to the working directory's name,
     /// which is convenient and also the reason to state it: this is an
-    /// address. A Claviron edge names it in its own configuration the way it
-    /// names a PHP or JavaScript application, and finds this process by it in
-    /// shared memory — so the two spellings have to match, and a directory
-    /// rename would silently break that.
-    ///
-    /// Several processes may answer to it. They take a lane each and know
-    /// nothing about each other; the edge reads the lanes serving the name and
-    /// picks the idlest. Nothing has to be told that a new one started.
+    /// address. A Claviron edge names it in its own configuration and finds
+    /// this process by it in shared memory — so the two spellings have to
+    /// match, and a directory rename would silently break that.
     pub fn name(
         mut self,
         name: impl Into<String>
     ) -> Self {
-        self.application_name = Some(name.into());
+        self.launch.runner.name = Some(name.into());
         self
     }
 
-    /// The file this launch was read from.
-    ///
-    /// Defaults to `gufi.yaml` beside the application. Set it when the
-    /// deployment keeps its configuration apart from the code — `/etc/orders`,
-    /// or a mounted volume.
+    /// The file this launch was read from. Defaults to `gufi.yaml` beside the
+    /// application.
     pub fn config_path(
         mut self,
         path: impl Into<PathBuf>
@@ -121,7 +74,7 @@ impl Runner {
         mut self,
         path: impl Into<PathBuf>
     ) -> Self {
-        self.application_root = Some(path.into());
+        self.launch.own.root = Some(path.into());
         self
     }
 
@@ -129,58 +82,55 @@ impl Runner {
         mut self,
         path: impl Into<PathBuf>
     ) -> Self {
-        self.virtual_environment = Some(path.into());
+        self.launch.own.venv = Some(path.into());
         self
     }
 
     /// Also answer through this application's fleet, reached over shared
-    /// memory.
-    ///
-    /// There is no fleet name to go with it: the fleet is named after the
-    /// application, so the application name is the whole of the address.
+    /// memory. The fleet is named after the application, so the application
+    /// name is the whole of the address.
     pub fn orbit(
         mut self,
         orbit: bool
     ) -> Self {
-        self.orbit = orbit;
+        self.launch.runner.orbit = orbit;
         self
     }
 
-    /// Also answer on a socket.
-    ///
-    /// Doors are capabilities, not alternatives: a process may hold a lane in
-    /// the fleet and a Unix socket at the same time, which is what a migration
-    /// off an old front server looks like. Every one of them ends at the same
-    /// application.
+    /// Also answer on a socket. Doors are capabilities, not alternatives: a
+    /// process may hold a lane in the fleet and a Unix socket at once.
     pub fn listen(
         mut self,
         bind: Bind
     ) -> Self {
-        self.binds.push(bind);
+        match bind {
+            Bind::Tcp(address) => self.launch.runner.tcp = Some(address),
+            Bind::Uds(path) => self.launch.runner.uds = Some(path)
+        }
         self
     }
 
-    /// Whose forwarding headers to believe.
-    ///
-    /// Nobody, unless stated. A Unix socket is trusted whatever this says:
-    /// opening it already took the operator's permission.
+    /// Whose forwarding headers to believe. Nobody, unless stated. A Unix
+    /// socket is trusted whatever this says: opening it already took the
+    /// operator's permission.
     pub fn trusted(
         mut self,
         networks: impl IntoIterator<Item = Network>
     ) -> Self {
-        self.trusted.extend(networks);
+        self.launch.runner.trusted.extend(networks);
         self
     }
 
-    /// Serve HTTPS on the TCP doors.
-    ///
-    /// A Unix socket is left alone: its boundary is already the filesystem's.
+    /// Serve HTTPS on the TCP socket. A Unix socket is left alone: its
+    /// boundary is already the filesystem's.
     #[cfg(feature = "tls")]
     pub fn tls(
         mut self,
         tls: crate::Tls
     ) -> Self {
-        self.tls = Some(tls);
+        self.launch.runner.tls_cert = Some(tls.certificate);
+        self.launch.runner.tls_key = Some(tls.key);
+        self.launch.runner.tls_client_ca = tls.client_ca;
         self
     }
 
@@ -189,110 +139,51 @@ impl Runner {
         mut self,
         protocols: Protocols
     ) -> Self {
-        self.protocols = protocols;
+        self.launch.runner.h1 = protocols.h1;
+        self.launch.runner.h2 = protocols.h2;
         self
     }
 
-    /// How many worker processes serve this application.
-    ///
-    /// Zero is standalone: one process, one interpreter. Above that a master
-    /// supervises that many workers, each with an interpreter of its own —
-    /// which is how Python scales, since one interpreter runs one thread of
-    /// bytecode at a time.
-    ///
-    /// The workers inherit this launch rather than re-reading a command line:
-    /// a worker is started by the supervisor with no arguments, so whatever
-    /// was resolved here travels in the bootstrap envelope. An application
-    /// that asks for workers therefore gets the doors it asked for in every
-    /// one of them.
-    ///
-    /// A master serves no traffic itself: it holds no lane and binds no
-    /// socket.
+    /// How many worker processes serve this application. Zero is standalone:
+    /// one process, one interpreter. Above that a master supervises that many
+    /// workers, each with an interpreter of its own — which is how Python
+    /// scales — and serves no traffic itself.
     pub fn workers(
         mut self,
         workers: u8
     ) -> Self {
-        self.workers = workers;
+        self.launch.runner.workers = Some(workers);
         self
     }
 
-    /// Take what a launch decided.
-    ///
-    /// Each field that is set replaces the runner's; each that is not leaves
-    /// it alone. Builder calls made after this one win, so an application can
-    /// accept the command line and still pin something itself.
+    /// Take what a launch decided: each field it set stands over the runner's.
+    /// Builder calls made after this one win, so an application can accept the
+    /// command line and still pin something itself.
     pub fn with_options(
         mut self,
         options: crate::GufiOptions
     ) -> Self {
-        let crate::GufiOptions {
-            runner,
-            root,
-            venv,
-            config,
-            #[cfg(feature = "broadcast")]
-            broadcasting
-        } = options;
-        #[cfg(feature = "watch")]
-        if runner.watch {
-            self.watch = Some(runner.watch_paths.clone());
-        }
-        #[cfg(feature = "files")]
-        if runner.files.is_some() {
-            self.files = runner.files.clone();
-        }
-        #[cfg(feature = "broadcast")]
-        if let Some(broadcasting) = broadcasting {
-            self.broadcasting = broadcasting;
-        }
-        if let Some(path) = config {
+        if let Some(path) = options.config.clone() {
             self.config_path = Some(path);
         }
-        if let Some(policy) = runner.supervisor.clone() {
-            self.supervisor = Some(policy);
-        }
-        if let Some(name) = runner.name.clone() {
-            self.application_name = Some(name);
-        }
-        if runner.orbit {
-            self.orbit = true;
-        }
-        self.binds.extend(runner.binds());
-        if runner.h1 || runner.h2 {
-            self.protocols = runner.protocols();
-        }
-        self.trusted.extend(runner.trusted.iter().copied());
-        if let Some(workers) = runner.workers {
-            self.workers = workers;
-        }
-        #[cfg(feature = "tls")]
-        if let Some(tls) = runner.tls() {
-            self.tls = Some(tls);
-        }
-        self.limits = RunnerOptions {
-            max_in_flight: runner.max_in_flight,
-            max_concurrent_requests: runner.max_concurrent_requests,
-            requests: runner.requests,
-            responses: runner.responses,
-            ..RunnerOptions::default()
-        };
-        if let Some(root) = root {
-            self.application_root = Some(root);
-        }
-        if let Some(venv) = venv {
-            self.virtual_environment = Some(venv);
+        let given = options.into_launch();
+        self.launch.runner = given.runner.over(self.launch.runner);
+        self.launch.own.root = given.own.root.or(self.launch.own.root);
+        self.launch.own.venv = given.own.venv.or(self.launch.own.venv);
+        #[cfg(feature = "broadcast")]
+        {
+            self.launch.own.broadcasting = given.own.broadcasting.or(self.launch.own.broadcasting);
         }
         self
     }
 
     /// Boot the application and serve it.
     ///
-    /// The lifecycle is Claviron's standalone one, not a sequence written here:
-    /// providers boot in dependency order, runnables are spawned once every
-    /// boot has completed, shutdown drains them, and finalize runs last. The
-    /// Python interpreter and the development ingress are two providers in that
-    /// order like any other, which is what lets `configure` register alongside
-    /// them.
+    /// The lifecycle is Claviron's, not a sequence written here: providers
+    /// boot in dependency order, runnables are spawned once every boot has
+    /// completed, shutdown drains them, and finalize runs last. The doors,
+    /// routing, trust and supervision are the runner shell's; the interpreter
+    /// is this crate's owner among them.
     pub async fn run<F>(
         self,
         configure: F
@@ -300,234 +191,88 @@ impl Runner {
     where
         F: FnOnce(&AppState) -> registry::Result<()> + Send + 'static
     {
-        let application_root = match self.application_root {
+        let mut launch = self.launch;
+        let root = match launch.own.root.clone() {
             Some(path) => path,
             None => std::env::current_dir().map_err(Error::CurrentDirectory)?
         };
         // The program's own name, not the directory it was started in: an
         // address must not depend on where someone was standing.
-        let application_name = match self.application_name {
+        let name = match launch.runner.name.clone() {
             Some(name) => name,
-            None => crate::options::default_name(&application_root)
-                .ok_or(Error::MissingApplicationName)?
+            None => crate::options::default_name(&root).ok_or(Error::MissingApplicationName)?
         };
-        let virtual_environment =
-            self.virtual_environment.unwrap_or_else(|| application_root.join(".venv"));
-        // The supervisor's policy comes from this launch, not from a file of
-        // Claviron's own, so nothing here looks for `supervisor.yaml`.
-        let supervisor = self.supervisor.clone().unwrap_or_default();
-        let target = self.target;
-        let protocols = self.protocols;
-        let trusted = self.trusted;
-        #[cfg(feature = "tls")]
-        let tls = self.tls;
-        let orbit = self.orbit;
-        let workers = self.workers;
-        #[cfg(feature = "watch")]
-        let watch = self.watch.clone();
-        #[cfg(feature = "watch")]
-        if watch.is_some() && workers < 2 {
-            return Err(Error::WatchWithoutWorkers);
-        }
-        #[cfg(feature = "broadcast")]
-        let broadcasting = self.broadcasting.clone();
-        #[cfg(feature = "files")]
-        let files = self.files.clone();
-        // Read here so a bad policy stops the launch, not the first request.
-        self.limits.policy().map_err(Error::Registry)?;
-        let limits = self.limits.clone();
+        launch.own.venv = Some(launch.own.venv.clone().unwrap_or_else(|| root.join(".venv")));
+        launch.own.root = Some(root.clone());
         // A process with no door would boot an interpreter nothing can reach.
         // The first thing a Python developer runs has no arguments, so that
         // case is a local listener rather than an error.
-        let binds = if self.binds.is_empty() && !orbit {
-            vec![Bind::Tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000))]
-        } else {
-            self.binds
-        };
-
-        // Named once here so boot can say where the launch came from. A
-        // worker is not told: it did not read a file, it was handed the
-        // result, and saying otherwise would invite someone to edit that
-        // file and expect a worker to notice.
-        let configuration =
-            self.config_path.clone().unwrap_or_else(|| application_root.join(crate::CONFIG_FILE));
-        let configuration = configuration.is_file().then_some(configuration);
-
-        // What this process resolved, for its workers to inherit. A worker is
-        // started with no command line, so the envelope is how a door asked
-        // for here reaches every one of them.
-        let launch = crate::GufiOptions {
-            runner: RunnerOptions {
-                name: Some(application_name.clone()),
-                orbit,
-                tcp: binds.iter().find_map(|bind| match bind {
-                    Bind::Tcp(address) => Some(*address),
-                    Bind::Uds(_) => None
-                }),
-                uds: binds.iter().find_map(|bind| match bind {
-                    Bind::Uds(path) => Some(path.clone()),
-                    Bind::Tcp(_) => None
-                }),
-                h1: protocols.h1,
-                h2: protocols.h2,
-                trusted: trusted.clone(),
-                #[cfg(feature = "tls")]
-                tls_cert: tls.as_ref().map(|tls| tls.certificate.clone()),
-                #[cfg(feature = "tls")]
-                tls_key: tls.as_ref().map(|tls| tls.key.clone()),
-                #[cfg(feature = "tls")]
-                tls_client_ca: tls.as_ref().and_then(|tls| tls.client_ca.clone()),
-                // Carried: every worker is held to the same written policy.
-                max_in_flight: limits.max_in_flight,
-                max_concurrent_requests: limits.max_concurrent_requests,
-                requests: limits.requests.clone(),
-                responses: limits.responses.clone(),
-                #[cfg(feature = "files")]
-                files: files.clone(),
-                // Not carried: a worker does not start workers.
-                workers: None,
-                // Carried: a worker registers the same policy source its
-                // master did, so the fleet is supervised by one written-down
-                // decision.
-                supervisor: Some(supervisor.clone()),
-                // Not carried: the master watches, a worker is what it
-                // restarts.
-                ..RunnerOptions::default()
-            },
-            root: Some(application_root.clone()),
-            venv: Some(virtual_environment.clone()),
-            // Not carried: a worker did not read a file, it was handed the
-            // result of one.
-            config: None,
-            #[cfg(feature = "broadcast")]
-            broadcasting: Some(broadcasting.clone())
+        if launch.runner.tcp.is_none() && launch.runner.uds.is_none() && !launch.runner.orbit {
+            launch.runner.tcp = Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000));
         }
-        .encode()
-        .map_err(Error::Registry)?;
+        // An interpreter is not reloaded in place: a change rolls the workers
+        // over, so there have to be workers to roll.
+        #[cfg(feature = "watch")]
+        if launch.runner.watch && launch.runner.workers.unwrap_or(0) < 2 {
+            return Err(Error::WatchWithoutWorkers);
+        }
+        let prepared = launch.prepare(name).map_err(Error::Registry)?;
+
+        // Named once here so the master can say where the launch came from.
+        let configuration =
+            self.config_path.clone().unwrap_or_else(|| root.join(crate::CONFIG_FILE));
+        let configuration = configuration.is_file().then_some(configuration);
+        let target = self.target;
 
         Server::new()
-            .workers(workers)
-            .launch(launch)
-            // The instance lock, held under the application's own name: one
-            // directory, one virtual environment, one process tree. A second
-            // process of the same name is refused rather than left to write
-            // over this one's state.
-            .name(application_name.clone())
-            // This process's own fleet, holding its workers and its metrics —
-            // not the shared one the transport meets in, and never Claviron's
-            // `clv`: an application has no business mapping a server's
-            // internal state, and a server has none mapping an application's.
-            .fleet_name(application_name.clone())
-            .config_dir(&application_root)
+            .workers(prepared.workers)
+            .launch(prepared.envelope)
+            // The instance lock and this process's own fleet, both under the
+            // application's own name — never Claviron's `clv`.
+            .name(prepared.name.clone())
+            .fleet_name(prepared.name)
+            .config_dir(&root)
             .register(move |state| {
-                // The invocation router is already registered: Claviron's own
-                // bootstrap installs it before this callback runs, and the
-                // interpreter resolves it at boot.
-                // Before the application's own registrations, because the
-                // supervisor boots early and must find it there.
-                claviron::runner::supervisor::register_policy(state, supervisor.clone())?;
+                // A worker serves what its master resolved, and reads it
+                // before anything is registered from it: the interpreter's
+                // root and environment are in there too.
+                let launch = launch.inherited(state)?;
+                if !state.is_worker()
+                    && let Some(path) = &configuration
+                {
+                    tracing::info!("📄 launch read from {}", path.display());
+                }
+                let runner = &launch.runner;
+                // Before the application's own registrations: the supervisor
+                // boots early and must find it there.
+                claviron::runner::supervisor::register_policy(
+                    state,
+                    runner.supervisor.clone().unwrap_or_default()
+                )?;
+                let root = launch.own.root.clone().unwrap_or_default();
+                let venv = launch.own.venv.clone().unwrap_or_else(|| root.join(".venv"));
 
                 // The master watches the source and restarts its workers; the
                 // workers are what it restarts, so they do not watch.
                 #[cfg(feature = "watch")]
-                if state.is_master()
-                    && let Some(paths) = &watch
-                {
+                if state.is_master() && runner.watch {
                     state.registry_ref().insert(Arc::new(crate::watch::watcher(
-                        application_root.clone(),
-                        paths.clone()
+                        root.clone(),
+                        runner.watch_paths.clone()
                     )))?;
                 }
 
-                // A worker was started with no command line: whatever this
-                // process's `main` parsed, it parsed nothing. What it serves
-                // is what its master resolved, and that arrived in the
-                // bootstrap envelope. It is read first, before anything is
-                // registered from it — the interpreter's own root and virtual
-                // environment are in there too, and a worker that fell back
-                // to its working directory for those would look for `.venv`
-                // wherever the master happened to be started from.
-                //
-                // Asked of the run mode rather than of the registry, because
-                // the process that wrote the envelope also holds it: the
-                // question is not whether a launch is there, it is whether
-                // this process resolved it or was handed it.
-                let inherited = if state.is_worker() {
-                    state
-                        .registry_ref()
-                        .resolve::<claviron::runtime::LaunchBlob>()
-                        .filter(|blob| !blob.is_empty())
-                        .map(|blob| crate::GufiOptions::decode(blob.as_bytes()))
-                        .transpose()
-                        .map_err(registry::Error::msg)?
-                } else {
-                    if let Some(path) = &configuration {
-                        tracing::info!("📄 launch read from {}", path.display());
-                    }
-                    None
-                };
-
-                // A worker's is its master's, carried in the launch.
-                #[cfg(feature = "broadcast")]
-                let broadcasting = match inherited.as_ref() {
-                    Some(options) => options.broadcasting.clone().unwrap_or_default(),
-                    None => broadcasting.clone()
-                };
-                #[cfg(feature = "files")]
-                let files = match inherited.as_ref() {
-                    Some(options) => options.runner.files.clone(),
-                    None => files.clone()
-                };
-                let limits = match inherited.as_ref() {
-                    Some(options) => options.runner.clone(),
-                    None => limits.clone()
-                };
-                let policy = limits.policy().map_err(registry::Error::msg)?;
-                let (orbit, binds, protocols, trusted, application_name, root, venv) =
-                    match inherited {
-                        None => (
-                            orbit,
-                            binds,
-                            protocols,
-                            trusted,
-                            application_name,
-                            application_root,
-                            virtual_environment
-                        ),
-                        Some(options) => {
-                            let mut doors = Vec::new();
-                            doors.extend(options.runner.binds());
-                            (
-                                options.runner.orbit,
-                                doors,
-                                options.runner.protocols(),
-                                options.runner.trusted.clone(),
-                                options.runner.name.clone().unwrap_or(application_name),
-                                options.root.clone().unwrap_or(application_root),
-                                options.venv.clone().unwrap_or(virtual_environment)
-                            )
-                        }
-                    };
-
-                // Parsed here, in every process, and anchored at the root.
-                #[cfg(feature = "files")]
-                let files = files
-                    .as_ref()
-                    .map(|files| files.parse().map(|files| Arc::new(files.under(&root))))
-                    .transpose()
-                    .map_err(registry::Error::msg)?;
-
-                // The broadcast service itself is registered by Claviron's own
-                // bootstrap whenever the feature is built in; what the launch
-                // adds is the application `claviron.broadcast` publishes to.
+                // The owner: the interpreter, and whatever the application's
+                // routes do not claim. The broadcast service itself is
+                // Claviron's; what the launch adds is the application
+                // `claviron.broadcast` publishes to.
                 let application = Arc::new(PythonApplicationService::new(
                     target,
-                    root,
+                    root.clone(),
                     venv,
                     #[cfg(feature = "broadcast")]
-                    broadcasting
+                    launch.own.broadcasting.clone().unwrap_or_default()
                 ));
-                // The owner: whatever the application's routes do not claim.
                 let python = application.service();
                 let handle = python.handle_cell();
                 #[cfg(feature = "websocket")]
@@ -543,13 +288,7 @@ impl Runner {
                 let owner = owner.upgrades(upgrades);
                 claviron::runner::register_owner(state, owner)?;
                 state.registry_ref().insert(application)?;
-                // What stands in front of the routes: the written policy, and
-                // the bound on requests admitted at once.
-                let routing =
-                    claviron::runner::Routing::new(policy, limits.max_concurrent_requests);
-                #[cfg(feature = "files")]
-                let routing = routing.files(files);
-                state.registry_ref().insert(Arc::new(routing))?;
+                launch::register_routing(state, runner, &root)?;
                 // The fleet's keyed counters: `claviron.counter(key)` in
                 // Python, `CounterProvider` in Rust.
                 claviron::orbit::register_counter(state)?;
@@ -558,32 +297,8 @@ impl Runner {
                 // the interpreter behind their routes.
                 configure(state)?;
                 claviron::runner::ensure_application(state)?;
-
-                // Every door that was asked for, and they do not exclude each
-                // other: each is a runnable of its own, and all of them end at
-                // the same application.
-                if orbit {
-                    // The lane advertises what this process *serves*, which is
-                    // the one name the edge knows.
-                    state.registry_ref().insert(Arc::new(claviron::runner::OrbitIngress::new(
-                        application_name,
-                        crate::orbit::ASGI_RUNTIME,
-                        limits.max_in_flight
-                    )))?;
-                }
-                // The launch's answer, unless `configure` already registered a
-                // better one. Same rule as the application service: state what
-                // is missing, never overwrite what was stated.
-                if state.registry_ref().resolve::<Trust>().is_none() {
-                    state.registry_ref().insert(Arc::new(Trust::new(trusted)))?;
-                }
-                if !binds.is_empty() {
-                    let ingress = claviron::runner::SocketIngress::new(binds, protocols);
-                    #[cfg(feature = "tls")]
-                    let ingress = ingress.tls(tls);
-                    state.registry_ref().insert(Arc::new(ingress))?;
-                }
-                Ok(())
+                launch::register_trust(state, runner)?;
+                launch::register_doors(state, runner, crate::orbit::ASGI_RUNTIME, None)
             })
             .serve()
             .await?;

@@ -1,5 +1,10 @@
 use super::*;
 
+/// What a worker is handed: the launch, through the envelope's encoding.
+fn envelope(options: GufiOptions) -> Launch {
+    serde_json::from_slice(&serde_json::to_vec(&options.into_launch()).unwrap()).unwrap()
+}
+
 fn launch() -> GufiOptions {
     GufiOptions {
         runner: RunnerOptions {
@@ -20,12 +25,12 @@ fn launch() -> GufiOptions {
 #[test]
 fn a_launch_survives_the_envelope() {
     let sent = launch();
-    let back = GufiOptions::decode(&sent.encode().unwrap()).unwrap();
+    let back = envelope(sent.clone());
 
     assert_eq!(back.runner.name, sent.runner.name);
     assert_eq!(back.runner.orbit, sent.runner.orbit);
     assert_eq!(back.runner.uds, sent.runner.uds);
-    assert_eq!(back.root, sent.root);
+    assert_eq!(back.own.root, sent.root);
     assert_eq!(back.runner.h2, sent.runner.h2);
     assert_eq!(
         back.runner.trusted.iter().map(ToString::to_string).collect::<Vec<_>>(),
@@ -38,7 +43,10 @@ fn a_launch_survives_the_envelope() {
 /// differently each time could never match.
 #[test]
 fn the_same_launch_encodes_the_same_bytes() {
-    assert_eq!(launch().encode().unwrap(), launch().encode().unwrap());
+    assert_eq!(
+        serde_json::to_vec(&launch().into_launch()).unwrap(),
+        serde_json::to_vec(&launch().into_launch()).unwrap()
+    );
 }
 
 /// A trusted network is carried as the text it was written as, so what an
@@ -49,7 +57,7 @@ fn a_trusted_network_keeps_its_spelling() {
         runner: RunnerOptions { trusted: vec!["192.0.2.1".parse().unwrap()], ..Default::default() },
         ..Default::default()
     };
-    let back = GufiOptions::decode(&sent.encode().unwrap()).unwrap();
+    let back = envelope(sent.clone());
     assert_eq!(back.runner.trusted[0].to_string(), "192.0.2.1");
 }
 
@@ -156,7 +164,7 @@ fn the_supervisor_policy_travels_with_the_launch() {
     let policy = resolved.runner.supervisor.clone().expect("the file stated a policy");
     assert_eq!(policy.heartbeat.interval, std::time::Duration::from_secs(2));
 
-    let back = GufiOptions::decode(&resolved.encode().expect("encode")).expect("decode");
+    let back = envelope(resolved.clone());
     assert_eq!(
         back.runner.supervisor.expect("the envelope carried it").heartbeat.interval,
         std::time::Duration::from_secs(2)
@@ -167,10 +175,10 @@ fn the_supervisor_policy_travels_with_the_launch() {
 /// is refused rather than ignored.
 #[test]
 fn a_key_nobody_knows_is_refused() {
-    let read: GufiOptions = serde_yaml::from_str("orbit: true\nvenv: .venv\n").unwrap();
+    let read: Launch = serde_yaml::from_str("orbit: true\nvenv: .venv\n").unwrap();
     assert!(read.runner.orbit);
-    assert_eq!(read.venv.as_deref(), Some(std::path::Path::new(".venv")));
+    assert_eq!(read.own.venv.as_deref(), Some(std::path::Path::new(".venv")));
 
-    let typo = serde_yaml::from_str::<GufiOptions>("orbitt: true\n");
+    let typo = serde_yaml::from_str::<Launch>("orbitt: true\n");
     assert!(typo.is_err(), "a mistyped key is an error");
 }

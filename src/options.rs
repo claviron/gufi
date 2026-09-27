@@ -135,56 +135,46 @@ pub struct GufiOptions {
     pub config: Option<PathBuf>
 }
 
-/// gufi's own keys, beside the runner's in the same flat file.
-#[derive(Default, serde::Serialize, serde::Deserialize)]
+/// gufi's own keys, beside the runner's in the same flat file, and what a
+/// worker inherits of them.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
-struct Own {
-    root: Option<PathBuf>,
-    venv: Option<PathBuf>,
+pub(crate) struct Python {
+    pub(crate) root: Option<PathBuf>,
+    pub(crate) venv: Option<PathBuf>,
     #[cfg(feature = "broadcast")]
-    broadcasting: Option<Broadcasting>
+    pub(crate) broadcasting: Option<Broadcasting>
 }
 
-impl serde::Serialize for GufiOptions {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S
-    ) -> Result<S::Ok, S::Error> {
-        use serde::ser::Error;
-        let own = Own {
-            root: self.root.clone(),
-            venv: self.venv.clone(),
-            #[cfg(feature = "broadcast")]
-            broadcasting: self.broadcasting.clone()
-        };
-        let shared = serde_yaml::to_value(&self.runner).map_err(S::Error::custom)?;
-        let own = serde_yaml::to_value(&own).map_err(S::Error::custom)?;
-        claviron::runner::options::merge(shared, own).serialize(serializer)
+/// A launch as gufi writes and carries it: the runner's options and its own.
+pub(crate) type Launch = claviron::runner::launch::Launch<Python>;
+
+impl GufiOptions {
+    /// The launch these options state.
+    pub(crate) fn into_launch(self) -> Launch {
+        Launch {
+            runner: self.runner,
+            own: Python {
+                root: self.root,
+                venv: self.venv,
+                #[cfg(feature = "broadcast")]
+                broadcasting: self.broadcasting
+            }
+        }
     }
-}
 
-impl<'de> serde::Deserialize<'de> for GufiOptions {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        use serde::de::Error;
-        let file = serde_yaml::Value::deserialize(deserializer)?;
-        let (shared, own) = claviron::runner::options::split(file).map_err(D::Error::custom)?;
-        let runner: RunnerOptions = serde_yaml::from_value(shared).map_err(D::Error::custom)?;
-        // A key neither side knows lands here; the list of what is known is
-        // both halves, or the message would point away from the fix.
-        let own: Own = serde_yaml::from_value(own).map_err(|error| {
-            D::Error::custom(format!(
-                "{error}, or one of the runner's: {}",
-                RunnerOptions::KEYS.join(", ")
-            ))
-        })?;
-        Ok(Self {
-            runner,
-            root: own.root,
-            venv: own.venv,
+    fn from_launch(
+        launch: Launch,
+        config: Option<PathBuf>
+    ) -> Self {
+        Self {
+            runner: launch.runner,
+            root: launch.own.root,
+            venv: launch.own.venv,
             #[cfg(feature = "broadcast")]
-            broadcasting: own.broadcasting,
-            config: None
-        })
+            broadcasting: launch.own.broadcasting,
+            config
+        }
     }
 }
 
@@ -296,8 +286,9 @@ impl GufiOptions {
             }
             Err(error) => return Err(format!("read {}: {error}", path.display()))
         };
-        let written: Self = serde_yaml::from_str(&text)
+        let written: Launch = serde_yaml::from_str(&text)
             .map_err(|error| format!("parse {}: {error}", path.display()))?;
+        let written = Self::from_launch(written, None);
         let mut resolved = self.over(written);
         resolved.runner.validate().map_err(|error| format!("{}: {error}", path.display()))?;
         resolved.config = Some(path);
@@ -318,25 +309,6 @@ impl GufiOptions {
             broadcasting: self.broadcasting.or(written.broadcasting),
             config: self.config
         }
-    }
-}
-
-impl GufiOptions {
-    /// Encode these options for a worker to inherit.
-    ///
-    /// A worker is started by the supervisor with no command line — an
-    /// embedding binary may define any flags it likes and the supervisor has
-    /// no business parsing them — so whatever the launch resolved travels in
-    /// the bootstrap envelope instead. The encoding is deterministic: the
-    /// same options produce the same bytes, which is what lets a master and
-    /// its workers be compared at all.
-    pub fn encode(&self) -> Result<Vec<u8>, String> {
-        serde_json::to_vec(self).map_err(|error| error.to_string())
-    }
-
-    /// Read back what a master resolved.
-    pub fn decode(bytes: &[u8]) -> Result<Self, String> {
-        serde_json::from_slice(bytes).map_err(|error| error.to_string())
     }
 }
 
