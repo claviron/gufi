@@ -104,7 +104,6 @@ pub struct PythonService {
 impl PythonService {
     /// The interpreter's handle as it will be once booted, for a stage that
     /// reaches Python outside the HTTP exchange — a WebSocket.
-    #[cfg(feature = "websocket")]
     pub(crate) fn handle_cell(&self) -> Arc<OnceLock<PythonApplicationHandle>> {
         Arc::clone(&self.handle)
     }

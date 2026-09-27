@@ -76,7 +76,7 @@ cli = ["dep:clap"]
 # Serving HTTPS on a TCP door, and requiring a client certificate on it. Off
 # by default: most deployments put this process behind something that already
 # terminated TLS.
-tls = ["claviron/tls"]
+tls = ["claviron/runner-tls"]
 # WebSocket on gufi's own listener, spoken with fastwebsockets, which is
 # re-exported as `gufi::websocket::fastwebsockets`. Over Orbit the edge speaks
 # the protocol and this is not needed.

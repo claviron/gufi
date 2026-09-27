@@ -12,7 +12,6 @@ use std::sync::Arc;
 
 use claviron::broadcast::protocol::pusher::PublishedEvent;
 use claviron::broadcast::{BroadcastService, BroadcastSession};
-use claviron::orbit::transport::Exchange;
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyString};
 
@@ -77,8 +76,7 @@ impl PythonBroadcast {
             }
         };
         let event = PublishedEvent { name: event, data, channels, socket_id };
-        let application =
-            application.unwrap_or_else(|| self.publisher.default_application.clone());
+        let application = application.unwrap_or_else(|| self.publisher.default_application.clone());
         self.publisher
             .service
             .publish(&application, &event)
@@ -92,13 +90,11 @@ impl PythonBroadcast {
 /// the refusal's status when it is ours and cannot be served.
 pub(crate) fn accept(
     service: &BroadcastService,
-    exchange: &Exchange
+    path: &str
 ) -> Option<Result<BroadcastSession, u16>> {
-    let key = exchange.path.strip_prefix("/app/")?;
+    let key = path.strip_prefix("/app/")?;
     let (application, _) = service.applications().application_by_key(key)?;
     Some(
-        service
-            .accept_session(Arc::from(application))
-            .map_err(|refusal| refusal.status().as_u16())
+        service.accept_session(Arc::from(application)).map_err(|refusal| refusal.status().as_u16())
     )
 }

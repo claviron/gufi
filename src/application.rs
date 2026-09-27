@@ -53,13 +53,6 @@ impl PythonApplicationService {
     pub(crate) fn service(&self) -> PythonService {
         PythonService::new(Arc::clone(&self.handle))
     }
-
-    /// The running interpreter's handle, once `boot()` has started it. An
-    /// ingress that reaches Python without going through the application's
-    /// routes — a WebSocket over Orbit — asks for it here.
-    pub(crate) fn handle(&self) -> Option<PythonApplicationHandle> {
-        self.handle.get().cloned()
-    }
 }
 
 #[async_trait]
