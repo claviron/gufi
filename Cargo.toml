@@ -27,6 +27,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1.0" }
 serde_yaml = { version = "0.9" }
 claviron = { version = "0.2.0-alpha.4", registry = "de02", default-features = false, features = [
+    "http",
     "supervisor",
     "orbit",
 ] }
