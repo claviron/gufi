@@ -30,7 +30,6 @@ claviron = { version = "0.2.0-alpha.4", registry = "de02", default-features = fa
     "orbit",
 ] }
 http = { version = "1.4" }
-notify = { version = "8.2", optional = true }
 http-body = { version = "1.0" }
 http-body-util = { version = "0.1" }
 hyper = { version = "1.11", features = [
@@ -113,7 +112,7 @@ log-otlp = ["log", "claviron/log-otlp"]
 # Development's reload: the master watches the application's Python with the
 # platform's native notifications and asks for a rolling worker restart on a
 # change. Needs two or more workers; production carries no watcher.
-watch = ["dep:notify"]
+watch = ["claviron/runner-watch"]
 
 # Claviron's release settings, so what this crate measures on its own — its
 # benches — is built the way the binaries that embed it are. A library's

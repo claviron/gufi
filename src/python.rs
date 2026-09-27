@@ -470,7 +470,7 @@ impl Runner {
                 if state.is_master()
                     && let Some(paths) = &watch
                 {
-                    state.registry_ref().insert(Arc::new(crate::watch::SourceWatcher::new(
+                    state.registry_ref().insert(Arc::new(crate::watch::watcher(
                         application_root.clone(),
                         paths.clone()
                     )))?;
