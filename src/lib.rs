@@ -16,6 +16,8 @@ mod broadcast;
 mod counter;
 #[cfg(feature = "django")]
 mod django;
+#[cfg(feature = "files")]
+mod files;
 mod http;
 pub(crate) mod options;
 mod orbit;
@@ -32,6 +34,8 @@ pub mod websocket;
 /// end up with a second one.
 #[cfg(feature = "axum")]
 pub use claviron::axum;
+#[cfg(feature = "files")]
+pub use files::FilesSource;
 pub use http::{Bind, Protocols};
 #[cfg(feature = "broadcast")]
 pub use options::Broadcasting;

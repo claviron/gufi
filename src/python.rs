@@ -70,7 +70,9 @@ pub struct Runner {
     #[cfg(feature = "tls")]
     tls: Option<crate::Tls>,
     #[cfg(feature = "broadcast")]
-    broadcasting: crate::options::Broadcasting
+    broadcasting: crate::options::Broadcasting,
+    #[cfg(feature = "files")]
+    files: Option<crate::files::FilesSource>
 }
 
 impl Runner {
@@ -90,7 +92,9 @@ impl Runner {
             #[cfg(feature = "tls")]
             tls: None,
             #[cfg(feature = "broadcast")]
-            broadcasting: crate::options::Broadcasting::default()
+            broadcasting: crate::options::Broadcasting::default(),
+            #[cfg(feature = "files")]
+            files: None
         }
     }
 
@@ -255,8 +259,14 @@ impl Runner {
             config,
             supervisor,
             #[cfg(feature = "broadcast")]
-            broadcasting
+            broadcasting,
+            #[cfg(feature = "files")]
+            files
         } = options;
+        #[cfg(feature = "files")]
+        if files.is_some() {
+            self.files = files;
+        }
         #[cfg(feature = "broadcast")]
         if let Some(broadcasting) = broadcasting {
             self.broadcasting = broadcasting;
@@ -343,6 +353,8 @@ impl Runner {
         let workers = self.workers;
         #[cfg(feature = "broadcast")]
         let broadcasting = self.broadcasting.clone();
+        #[cfg(feature = "files")]
+        let files = self.files.clone();
         // A process with no door would boot an interpreter nothing can reach.
         // The first thing a Python developer runs has no arguments, so that
         // case is a local listener rather than an error.
@@ -394,7 +406,9 @@ impl Runner {
             // did, so the fleet is supervised by one written-down decision.
             supervisor: Some(supervisor.clone()),
             #[cfg(feature = "broadcast")]
-            broadcasting: Some(broadcasting.clone())
+            broadcasting: Some(broadcasting.clone()),
+            #[cfg(feature = "files")]
+            files: files.clone()
         }
         .encode()
         .map_err(Error::Registry)?;
@@ -460,6 +474,11 @@ impl Runner {
                     Some(options) => options.broadcasting.clone().unwrap_or_default(),
                     None => broadcasting.clone()
                 };
+                #[cfg(feature = "files")]
+                let files = match inherited.as_ref() {
+                    Some(options) => options.files.clone(),
+                    None => files.clone()
+                };
                 let (orbit, binds, protocols, trusted, application_name, root, venv) =
                     match inherited {
                         None => (
@@ -491,6 +510,14 @@ impl Runner {
                         }
                     };
 
+                // Parsed here, in every process, and anchored at the root.
+                #[cfg(feature = "files")]
+                let files = files
+                    .as_ref()
+                    .map(|files| files.parse().map(|files| Arc::new(files.under(&root))))
+                    .transpose()
+                    .map_err(registry::Error::msg)?;
+
                 // The broadcast service itself is registered by Claviron's own
                 // bootstrap whenever the feature is built in; what the launch
                 // adds is the application `claviron.broadcast` publishes to.
@@ -499,7 +526,9 @@ impl Runner {
                     root,
                     venv,
                     #[cfg(feature = "broadcast")]
-                    broadcasting
+                    broadcasting,
+                    #[cfg(feature = "files")]
+                    files
                 )))?;
                 // The fleet's keyed counters: `claviron.counter(key)` in
                 // Python, `CounterProvider` in Rust.

@@ -101,6 +101,10 @@ broadcast = ["claviron/broadcast"]
 # configured by `broadcasting.channels` in gufi.yaml. The project installs
 # `channels` and `msgpack` itself.
 django = ["broadcast"]
+# Static mounts in front of the application (`files:` in gufi.yaml), served by
+# Claviron's file service — what runserver's static handling or WhiteNoise
+# does, for a process no edge stands in front of. No edge comes with it.
+files = ["axum", "claviron/files"]
 
 # Claviron's release settings, so what this crate measures on its own — its
 # benches — is built the way the binaries that embed it are. A library's

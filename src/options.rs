@@ -173,6 +173,12 @@ pub struct GufiOptions {
     #[cfg_attr(feature = "cli", arg(skip))]
     pub broadcasting: Option<Broadcasting>,
 
+    /// Static mounts served before the application, for a process no edge
+    /// stands in front of. Written in the file only.
+    #[cfg(feature = "files")]
+    #[cfg_attr(feature = "cli", arg(skip))]
+    pub files: Option<crate::files::FilesSource>,
+
     /// How many worker processes serve this application. Zero is standalone.
     ///
     /// Each worker is a process with an interpreter of its own, which is how
@@ -313,6 +319,10 @@ impl GufiOptions {
         let written: Self = serde_yaml::from_str(&text)
             .map_err(|error| format!("parse {}: {error}", path.display()))?;
         let mut resolved = self.over(written);
+        #[cfg(feature = "files")]
+        if let Some(files) = &resolved.files {
+            files.parse().map_err(|error| format!("{}: {error}", path.display()))?;
+        }
         resolved.config = Some(path);
         Ok(resolved)
     }
@@ -343,6 +353,8 @@ impl GufiOptions {
             workers: self.workers.or(written.workers),
             #[cfg(feature = "broadcast")]
             broadcasting: self.broadcasting.or(written.broadcasting),
+            #[cfg(feature = "files")]
+            files: self.files.or(written.files),
             // Policy is written down, never typed: no flag can have stated it.
             supervisor: written.supervisor,
             config: self.config

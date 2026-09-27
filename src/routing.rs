@@ -128,7 +128,7 @@ pub struct RequestScheme(pub String);
 /// Registration erases the concrete type so one ingress can drive whatever the
 /// application composed.
 pub struct Application {
-    service: Box<dyn ErasedService>
+    service: Arc<dyn ErasedService>
 }
 
 impl Application {
@@ -159,7 +159,7 @@ impl Provider<AppState> for Application {
     }
 }
 
-trait ErasedService: Send + Sync + 'static {
+pub(crate) trait ErasedService: Send + Sync + 'static {
     fn call_erased(
         &self,
         request: AppRequest
@@ -200,7 +200,18 @@ where
     B: http_body::Body<Data = Bytes> + Send + 'static,
     B::Error: std::fmt::Display
 {
-    state.registry_ref().insert(Arc::new(Application { service: Box::new(Erased(service)) }))?;
+    let service: Arc<dyn ErasedService> = Arc::new(Erased(service));
+    // Static mounts, when the launch wrote them, answer before any route.
+    #[cfg(feature = "files")]
+    let service: Arc<dyn ErasedService> = match state
+        .registry_ref()
+        .resolve::<PythonApplicationService>()
+        .and_then(|application| application.files())
+    {
+        Some(files) => Arc::new(Erased(crate::files::wrap(files, service))),
+        None => service
+    };
+    state.registry_ref().insert(Arc::new(Application { service }))?;
     Ok(())
 }
 
