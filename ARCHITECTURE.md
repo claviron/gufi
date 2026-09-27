@@ -18,15 +18,18 @@ It is its own project rather than a crate inside Claviron, because it compiles
 the application's binary and a library does not compile the things built on it.
 It reaches Claviron the way any consumer does — through the root facade,
 `claviron::app`, `claviron::runtime`, `claviron::Server` — and never through an
-internal `claviron-*` crate. There is no `claviron::runner` path back the other
-way: the facade does not carry the thing that builds against it.
+internal `claviron-*` crate. What every language runner needs alike lives in
+Claviron's language-neutral runner shell (`claviron::runner`), and moves there
+piece by piece; this crate supplies the Python owner. Nothing points from
+Claviron back to it.
 
 Claviron knows nothing about Python. The interpreter, the ASGI engine and PyO3
 all live here, which is why Claviron can be built and tested without a Python
 interpreter present at all.
 
-It owns no TLS, vhost routing, static files, configuration providers, process
-supervision, or Orbit transport.
+It owns no vhost routing, configuration providers, process supervision, or
+Orbit transport. TLS on its listener is the runner shell's; which proxies to
+believe is Claviron's HTTP layer's.
 
 ## The lifecycle is Claviron's
 

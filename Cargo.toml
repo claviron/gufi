@@ -17,7 +17,6 @@ links = "gufi"
 bytes = { version = "1.11" }
 clap = { version = "4", features = ["derive"], optional = true }
 # The same rustls Claviron resolves, so one binary holds one crypto provider.
-rustls-pemfile = { version = "2", optional = true }
 tokio-rustls = { version = "0.26", optional = true }
 fastwebsockets = { version = "0.10", features = ["upgrade"], optional = true }
 async-trait = { version = "0.1" }
@@ -28,6 +27,7 @@ serde_json = { version = "1.0" }
 serde_yaml = { version = "0.9" }
 claviron = { version = "0.2.0-alpha.4", registry = "de02", default-features = false, features = [
     "http",
+    "runner",
     "supervisor",
     "orbit",
 ] }
@@ -78,7 +78,7 @@ cli = ["dep:clap"]
 # Serving HTTPS on a TCP door, and requiring a client certificate on it. Off
 # by default: most deployments put this process behind something that already
 # terminated TLS.
-tls = ["dep:rustls-pemfile", "dep:tokio-rustls"]
+tls = ["claviron/tls", "dep:tokio-rustls"]
 # WebSocket on gufi's own listener, spoken with fastwebsockets, which is
 # re-exported as `gufi::websocket::fastwebsockets`. Over Orbit the edge speaks
 # the protocol and this is not needed.

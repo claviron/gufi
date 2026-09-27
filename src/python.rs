@@ -3,12 +3,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use claviron::Server;
+use claviron::http::trust::{Network, Trust};
 use claviron::runtime::{AppState, registry};
 
 use crate::application::PythonApplicationService;
 use crate::http::{Bind, HttpIngress, Protocols};
 use crate::orbit::OrbitIngress;
-use crate::trust::{Network, Trust};
 
 pub type Result<T> = std::result::Result<T, Error>;
 

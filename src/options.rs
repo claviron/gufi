@@ -141,7 +141,7 @@ pub struct GufiOptions {
     /// reading it back yields what the operator typed.
     #[cfg_attr(feature = "cli", arg(long = "trusted"))]
     #[serde(with = "networks")]
-    pub trusted: Vec<crate::trust::Network>,
+    pub trusted: Vec<claviron::http::trust::Network>,
 
     /// Serve HTTPS on the TCP door with this certificate chain.
     #[cfg(feature = "tls")]
@@ -415,9 +415,8 @@ pub(crate) fn default_name(root: &std::path::Path) -> Option<String> {
 /// `Network` is parsed from text and prints back to it; carrying the text is
 /// both smaller and closer to what was meant than carrying the parsed halves.
 mod networks {
+    use claviron::http::trust::Network;
     use serde::{Deserialize, Deserializer, Serializer};
-
-    use crate::trust::Network;
 
     pub(super) fn serialize<S: Serializer>(
         networks: &[Network],

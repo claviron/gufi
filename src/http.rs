@@ -27,6 +27,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use claviron::http::trust::Trust;
 use claviron::runtime::{AppState, Provider, RunContext, Runnable, ServiceStartPolicy, registry};
 use http::{Request, Response, StatusCode};
 use hyper::body::Incoming;
@@ -37,7 +38,6 @@ use tokio::net::{TcpListener, UnixListener};
 use tokio::task::JoinSet;
 
 use crate::routing::{AppRequest, AppResponse, Application, PeerAddrs, RequestScheme};
-use crate::trust::Trust;
 
 pub(crate) type Result<T> = std::result::Result<T, Error>;
 
@@ -544,7 +544,17 @@ impl Runnable<AppState> for HttpIngress {
         #[cfg(feature = "tls")]
         let acceptor = match &self.tls {
             None => None,
-            Some(tls) => Some(tls.acceptor().map_err(registry::Error::msg)?)
+            Some(tls) => {
+                // What this listener speaks, so a TLS client can pick HTTP/2.
+                let mut alpn: Vec<&[u8]> = Vec::new();
+                if self.protocols.h2 {
+                    alpn.push(b"h2");
+                }
+                if self.protocols.h1 {
+                    alpn.push(b"http/1.1");
+                }
+                Some(tls.acceptor(&alpn).map_err(|error| registry::Error::msg(error.to_string()))?)
+            }
         };
 
         let mut listeners = JoinSet::new();

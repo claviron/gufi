@@ -25,9 +25,6 @@ pub(crate) mod options;
 mod orbit;
 mod python;
 pub mod routing;
-#[cfg(feature = "tls")]
-pub mod tls;
-pub mod trust;
 #[cfg(feature = "watch")]
 mod watch;
 #[cfg(feature = "websocket")]
@@ -38,6 +35,11 @@ pub mod websocket;
 /// end up with a second one.
 #[cfg(feature = "axum")]
 pub use claviron::axum;
+/// Which proxies' forwarding headers count; Claviron's, re-exported.
+pub use claviron::http::trust;
+pub use claviron::http::trust::Trust;
+#[cfg(feature = "tls")]
+pub use claviron::runner::Tls;
 #[cfg(feature = "files")]
 pub use files::FilesSource;
 pub use http::{Bind, Protocols};
@@ -53,6 +55,3 @@ pub use routing::{
     AppRequest, AppResponse, PeerAddrs, PythonService, RequestBody, RequestScheme,
     register_router_with
 };
-#[cfg(feature = "tls")]
-pub use tls::Tls;
-pub use trust::Trust;
