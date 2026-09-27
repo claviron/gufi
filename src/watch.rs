@@ -45,10 +45,11 @@ pub(crate) fn watcher(
     paths: Vec<PathBuf>
 ) -> SourceWatcher {
     let restart: Reaction = Arc::new(|state| {
-        claviron::supervisor::WorkerManager::new(state)
+        let asked = claviron::supervisor::WorkerManager::new(&state)
             .and_then(|manager| manager.restart_workers())
             .map(|command| command.to_string())
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string());
+        Box::pin(async move { asked })
     });
     SourceWatcher::new(root, paths, PYTHON, restart)
 }
