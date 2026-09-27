@@ -96,5 +96,9 @@ pub(crate) fn accept(
 ) -> Option<Result<BroadcastSession, u16>> {
     let key = exchange.path.strip_prefix("/app/")?;
     let (application, _) = service.applications().application_by_key(key)?;
-    Some(service.accept_session(Arc::from(application)).map_err(|_| 503))
+    Some(
+        service
+            .accept_session(Arc::from(application))
+            .map_err(|refusal| refusal.status().as_u16())
+    )
 }
