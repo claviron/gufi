@@ -50,4 +50,4 @@ pub use options::{CONFIG_FILE, GufiOptions};
 pub use python::{Error, Result, Runner};
 #[cfg(feature = "axum")]
 pub use routing::register_router;
-pub use routing::{AppRequest, AppResponse, PeerAddrs, PythonService, RequestBody, RequestScheme};
+pub use routing::{AppRequest, AppResponse, PythonService, RequestBody};

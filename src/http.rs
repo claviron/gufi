@@ -25,8 +25,10 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use async_trait::async_trait;
+use claviron::http::ext::{ConnCtx, RealIpExt, ReceivedAt};
 use claviron::http::trust::Trust;
 use claviron::runner::Application;
 use claviron::runtime::{AppState, Provider, RunContext, Runnable, ServiceStartPolicy, registry};
@@ -38,7 +40,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, UnixListener};
 use tokio::task::JoinSet;
 
-use crate::routing::{AppRequest, AppResponse, PeerAddrs, RequestScheme};
+use crate::routing::{AppRequest, AppResponse};
 
 pub(crate) type Result<T> = std::result::Result<T, Error>;
 
@@ -221,8 +223,9 @@ impl Server {
                                     .accept(stream)
                                     .await
                                     .map_err(Error::Io)?;
+                                let tls = claviron::runner::tls::connection_info(stream.get_ref().1);
                                 serve_secure_connection(
-                                    stream, peer, local, protocols, trust, python, handler
+                                    stream, peer, local, tls, protocols, trust, python, handler
                                 )
                                 .await
                             }
@@ -290,6 +293,7 @@ async fn serve_secure_connection<I, H, HF>(
     stream: I,
     peer: Option<SocketAddr>,
     server: Option<SocketAddr>,
+    tls: claviron::http::ext::TlsInfo,
     protocols: Protocols,
     trust: Arc<Trust>,
     python: Option<crate::asgi::PythonApplicationHandle>,
@@ -300,7 +304,8 @@ where
     H: Fn(AppRequest) -> HF + Clone + Send + Sync + 'static,
     HF: Future<Output = AppResponse> + Send + 'static
 {
-    serve_with_scheme(stream, peer, server, protocols, trust, python, "https", handler).await
+    let connection = connection(peer, server, Some(tls));
+    serve_with(stream, peer, connection, protocols, trust, python, handler).await
 }
 
 async fn serve_connection<I, H, HF>(
@@ -317,17 +322,37 @@ where
     H: Fn(AppRequest) -> HF + Clone + Send + Sync + 'static,
     HF: Future<Output = AppResponse> + Send + 'static
 {
-    serve_with_scheme(stream, peer, server, protocols, trust, python, "http", handler).await
+    let connection = connection(peer, server, None);
+    serve_with(stream, peer, connection, protocols, trust, python, handler).await
 }
 
-async fn serve_with_scheme<I, H, HF>(
-    stream: I,
+/// The accepted connection's own facts, the edge's type for them. A Unix
+/// socket has no addresses, and gets none rather than placeholders.
+fn connection(
     peer: Option<SocketAddr>,
     server: Option<SocketAddr>,
+    tls: Option<claviron::http::ext::TlsInfo>
+) -> Option<Arc<ConnCtx>> {
+    let (Some(remote), Some(local)) = (peer, server) else { return None };
+    Some(Arc::new(ConnCtx {
+        listener: "tcp".parse().expect("a valid listener name"),
+        proto: None,
+        remote,
+        local_ip: local.ip(),
+        local_port: local.port(),
+        real_ip: None,
+        country_code: None,
+        tls
+    }))
+}
+
+async fn serve_with<I, H, HF>(
+    stream: I,
+    peer: Option<SocketAddr>,
+    connection: Option<Arc<ConnCtx>>,
     protocols: Protocols,
     trust: Arc<Trust>,
     python: Option<crate::asgi::PythonApplicationHandle>,
-    scheme: &'static str,
     handler: H
 ) -> Result<()>
 where
@@ -339,10 +364,9 @@ where
         handle_request(
             request,
             peer,
-            server,
+            connection.clone(),
             Arc::clone(&trust),
             python.clone(),
-            scheme,
             handler.clone()
         )
     });
@@ -374,10 +398,9 @@ where
 async fn handle_request<H, HF>(
     request: Request<Incoming>,
     peer: Option<SocketAddr>,
-    server: Option<SocketAddr>,
+    connection: Option<Arc<ConnCtx>>,
     trust: Arc<Trust>,
     python: Option<crate::asgi::PythonApplicationHandle>,
-    scheme: &'static str,
     handler: H
 ) -> std::result::Result<AppResponse, Infallible>
 where
@@ -409,9 +432,16 @@ where
         if let Some(host) = resolved.host.as_deref() {
             headers.push((b"host".to_vec(), host.as_bytes().to_vec()));
         }
+        let server = connection
+            .as_ref()
+            .map(|connection| SocketAddr::new(connection.local_ip, connection.local_port));
+        let secure = connection.as_ref().is_some_and(|connection| connection.tls.is_some());
         let scope = crate::asgi::HttpRequest {
             method: request.method().as_str().to_owned(),
-            scheme: resolved.scheme.clone().unwrap_or_else(|| scheme.to_owned()),
+            scheme: resolved
+                .scheme
+                .clone()
+                .unwrap_or_else(|| if secure { "https" } else { "http" }.to_owned()),
             http_version: "1.1".to_owned(),
             path: percent_encoding::percent_decode_str(request.uri().path())
                 .decode_utf8_lossy()
@@ -438,19 +468,24 @@ where
         parts.headers.insert(http::header::HOST, value);
     }
 
-    // The addresses belong to the connection, not to the request, so they ride
-    // in extensions. A stage that needs them — the ASGI scope does — reads them
-    // there; one that does not never sees them. A Unix socket has none, and
-    // the scope then reports none.
+    // The facts ride in extensions, as the edge's types: the connection's own
+    // in `ConnCtx`, a trusted proxy's word in `Forwarded`, the client after
+    // both in `RealIpExt`. A stage that needs them — the ASGI scope does —
+    // reads them there; one that does not never sees them.
     // Handed over as it arrives, not read first: the service reads it, a part
     // at a time if it is the interpreter.
     let mut request = Request::from_parts(parts, crate::routing::RequestBody::new(body));
-    if let (Some(client), Some(server)) = (resolved.client, server) {
-        request.extensions_mut().insert(PeerAddrs { client, server });
+    let extensions = request.extensions_mut();
+    extensions.insert(ReceivedAt(SystemTime::now()));
+    if let Some(client) = resolved.client {
+        extensions.insert(RealIpExt(client.ip()));
     }
-    request
-        .extensions_mut()
-        .insert(RequestScheme(resolved.scheme.unwrap_or_else(|| scheme.to_owned())));
+    if let Some(forwarded) = resolved.forwarded(peer) {
+        extensions.insert(forwarded);
+    }
+    if let Some(connection) = connection {
+        extensions.insert(connection);
+    }
 
     Ok(handler(request).await)
 }

@@ -30,6 +30,8 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use claviron::http::ext::RealIpExt;
+use claviron::http::trust::Forwarded;
 use claviron::orbit::transport::{
     Endpoint, Exchange, ExchangeReply, FrameKind, Message, TRANSPORT_BUFFER_BYTES, TransportBodies,
     TransportSegment, frame_kind, parking_supported, read_message, write_message
@@ -46,7 +48,6 @@ use tokio::task::JoinSet;
 
 use crate::application::PythonApplicationService;
 use crate::asgi::{HttpRequest, WebSocketDecision, WebSocketSession};
-use crate::routing::{PeerAddrs, RequestScheme};
 
 /// What this process's lane says serves its name. A PHP application given the
 /// same name is refused at its join rather than splitting this one's requests.
@@ -597,10 +598,18 @@ fn build_request(
     }
     let mut request = request.body(body).map_err(|error| error.to_string())?;
 
-    request.extensions_mut().insert(RequestScheme(exchange.scheme.clone()));
-    if let (Some(client), Some(server)) = (exchange.client, exchange.server) {
-        request.extensions_mut().insert(PeerAddrs { client, server });
+    // The edge accepted the connection and reported it in the exchange: a
+    // trusted hop's word, which is what `Forwarded` carries. There is no
+    // connection of this process's own to describe.
+    if let Some(client) = exchange.client {
+        request.extensions_mut().insert(RealIpExt(client.ip()));
     }
+    request.extensions_mut().insert(Forwarded {
+        client: exchange.client,
+        server: exchange.server,
+        scheme: exchange.scheme.parse().ok(),
+        host: None
+    });
     Ok(request)
 }
 

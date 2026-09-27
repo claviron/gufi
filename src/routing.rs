@@ -12,7 +12,6 @@
 
 use std::convert::Infallible;
 use std::future::Future;
-use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
@@ -50,28 +49,6 @@ pub fn full_body(bytes: impl Into<Bytes>) -> ResponseBody {
 }
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
-
-/// Addresses of the connection a request arrived on.
-///
-/// ASGI's `scope` names both and `http::Request` carries neither, so the
-/// ingress that accepted the request attaches this and the Python bridge reads
-/// it. Nothing is invented: an ingress that does not know an address does not
-/// attach one, and the scope reports `None`.
-#[derive(Clone, Copy, Debug)]
-pub struct PeerAddrs {
-    pub client: SocketAddr,
-    pub server: SocketAddr
-}
-
-/// The scheme the request arrived under.
-///
-/// `http::Uri` carries one only in absolute form, and a request read off a
-/// socket or out of a frame has a path. The ingress knows — a TLS listener
-/// served it, or an edge put it in the exchange — so it says here rather than
-/// letting the scope guess. An ingress that does not know attaches nothing and
-/// the scope reports `http`, which is what a plain listener is.
-#[derive(Clone, Debug)]
-pub struct RequestScheme(pub String);
 
 /// This application's routes in Rust, in front of its Python application.
 ///
@@ -189,14 +166,20 @@ where
     B: http_body::Body<Data = Bytes> + Send + 'static,
     B::Error: std::fmt::Display
 {
-    let peers = request.extensions().get::<PeerAddrs>().copied();
+    // Where it came from, read the way every owner reads it: a trusted hop's
+    // word first, the accepted connection's otherwise.
+    let origin = claviron::http::trust::Origin::of(request.extensions());
     let (parts, body) = request.into_parts();
     let body = body.map_err(|error| BoxError::from(error.to_string()));
 
-    let scheme = match parts.extensions.get::<RequestScheme>() {
-        Some(scheme) => scheme.0.clone(),
-        None => parts.uri.scheme_str().unwrap_or("http").to_owned()
-    };
+    // A plain listener is `http`, which is what an unknown scheme reports.
+    let scheme = origin
+        .scheme
+        .as_ref()
+        .map(|scheme| scheme.as_str())
+        .or(parts.uri.scheme_str())
+        .unwrap_or("http")
+        .to_owned();
     let scope = HttpRequest {
         method: parts.method.as_str().to_owned(),
         scheme,
@@ -209,8 +192,8 @@ where
             .iter()
             .map(|(name, value)| (name.as_str().as_bytes().to_vec(), value.as_bytes().to_vec()))
             .collect(),
-        client: peers.map(|peers| peers.client),
-        server: peers.map(|peers| peers.server)
+        client: origin.client,
+        server: origin.server
     };
 
     match handle.handle_http(scope, body).await {
