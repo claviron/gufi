@@ -17,13 +17,16 @@ pub use claviron::runner::websocket::Message;
 use claviron::runner::websocket::{Deliver, accept, is_websocket};
 use http::{Request, StatusCode};
 
-use crate::asgi::{PythonApplicationHandle, WebSocketDecision, WebSocketInbound, WebSocketSession};
+use crate::asgi::{
+    PythonApplicationHandle, WebSocketDecision, WebSocketInbound,
+    WebSocketSession,
+};
 use crate::routing::{AppRequest, AppResponse, full_body};
 
 impl Deliver for WebSocketInbound {
     fn deliver(
         &self,
-        message: Message
+        message: Message,
     ) -> impl Future<Output = bool> + Send {
         WebSocketInbound::deliver(self, message)
     }
@@ -37,7 +40,7 @@ impl Deliver for WebSocketInbound {
 /// WebSocket goes to the application, anything else is not one this serves.
 #[derive(Clone)]
 pub(crate) struct Upgrades {
-    python: Arc<OnceLock<PythonApplicationHandle>>
+    python: Arc<OnceLock<PythonApplicationHandle>>,
 }
 
 impl Upgrades {
@@ -49,18 +52,19 @@ impl Upgrades {
 impl tower_service::Service<AppRequest> for Upgrades {
     type Response = AppResponse;
     type Error = Infallible;
-    type Future = Pin<Box<dyn Future<Output = Result<AppResponse, Infallible>> + Send>>;
+    type Future =
+        Pin<Box<dyn Future<Output = Result<AppResponse, Infallible>> + Send>>;
 
     fn poll_ready(
         &mut self,
-        _: &mut Context<'_>
+        _: &mut Context<'_>,
     ) -> Poll<Result<(), Infallible>> {
         Poll::Ready(Ok(()))
     }
 
     fn call(
         &mut self,
-        request: AppRequest
+        request: AppRequest,
     ) -> Self::Future {
         let python = self.python.get().cloned();
         Box::pin(async move {
@@ -82,9 +86,14 @@ impl tower_service::Service<AppRequest> for Upgrades {
             let headers = match decision.await {
                 Ok(WebSocketDecision::Accept { headers }) => headers,
                 // Refused, or the application ended first: ASGI's answer is 403.
-                _ => return Ok(status(StatusCode::FORBIDDEN))
+                _ => return Ok(status(StatusCode::FORBIDDEN)),
             };
-            Ok(accept(Request::from_parts(parts, body), headers, inbound, outbound))
+            Ok(accept(
+                Request::from_parts(parts, body),
+                headers,
+                inbound,
+                outbound,
+            ))
         })
     }
 }

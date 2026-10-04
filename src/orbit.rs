@@ -8,11 +8,15 @@
 
 use std::sync::{Arc, OnceLock};
 
-use claviron::orbit::transport::{Endpoint, Message, read_message, write_message};
+use claviron::orbit::transport::{
+    Endpoint, Message, read_message, write_message,
+};
 use claviron::runner::{AppRequest, Handshake};
 use tokio::io::AsyncWriteExt;
 
-use crate::asgi::{PythonApplicationHandle, WebSocketDecision, WebSocketSession};
+use crate::asgi::{
+    PythonApplicationHandle, WebSocketDecision, WebSocketSession,
+};
 
 /// What the lane says serves this application's name. A PHP application given
 /// the same name is refused at its join rather than splitting this one's
@@ -25,7 +29,7 @@ pub(crate) async fn session(
     request: AppRequest,
     endpoint: Endpoint,
     handshake: Handshake,
-    python: Arc<OnceLock<PythonApplicationHandle>>
+    python: Arc<OnceLock<PythonApplicationHandle>>,
 ) {
     let Some(handle) = python.get().cloned() else {
         handshake.answer(503, Vec::new());
@@ -33,7 +37,8 @@ pub(crate) async fn session(
     };
     let (parts, _) = request.into_parts();
     let scope = crate::routing::scope(&parts);
-    let Ok(WebSocketSession { decision, inbound, mut outbound }) = handle.handle_websocket(scope)
+    let Ok(WebSocketSession { decision, inbound, mut outbound }) =
+        handle.handle_websocket(scope)
     else {
         handshake.answer(503, Vec::new());
         return;
@@ -66,7 +71,8 @@ pub(crate) async fn session(
     let to_client = async move {
         while let Some(message) = outbound.recv().await {
             let closing = matches!(message, Message::Close { .. });
-            if write_message(&mut outgoing, &message).await.is_err() || closing {
+            if write_message(&mut outgoing, &message).await.is_err() || closing
+            {
                 break;
             }
         }

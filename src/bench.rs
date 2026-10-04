@@ -104,7 +104,7 @@ use http::header::{CACHE_CONTROL, CONTENT_TYPE, HeaderName, HeaderValue};
 pub struct Ask {
     min: Option<u64>,
     max: Option<u64>,
-    payload: Option<usize>
+    payload: Option<usize>,
 }
 
 impl Ask {
@@ -115,9 +115,13 @@ impl Ask {
             (Some(only), None) => (only, only),
             (None, Some(high)) => (0, high),
             (Some(low), Some(high)) if low > high => (high, low),
-            (Some(low), Some(high)) => (low, high)
+            (Some(low), Some(high)) => (low, high),
         };
-        Some(Duration::from_millis(if low == high { low } else { low + spread(high - low + 1) }))
+        Some(Duration::from_millis(if low == high {
+            low
+        } else {
+            low + spread(high - low + 1)
+        }))
     }
 }
 
@@ -138,21 +142,31 @@ fn body(bytes: usize) -> &'static str {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
 
-    static ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    static ALPHABET: &[u8] =
+        b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     static SOURCE: OnceLock<Vec<u8>> = OnceLock::new();
-    static BODIES: OnceLock<Mutex<HashMap<usize, &'static str>>> = OnceLock::new();
+    static BODIES: OnceLock<Mutex<HashMap<usize, &'static str>>> =
+        OnceLock::new();
 
     let bytes = bytes.min(PAYLOAD_MAX);
-    let mut bodies =
-        BODIES.get_or_init(Default::default).lock().expect("the body cache is never poisoned");
+    let mut bodies = BODIES
+        .get_or_init(Default::default)
+        .lock()
+        .expect("the body cache is never poisoned");
     bodies.entry(bytes).or_insert_with(|| {
         // Printable and unpatterned, so nothing compresses it or optimises
         // it away. None of these characters needs escaping in JSON.
         let source = SOURCE.get_or_init(|| {
-            (0..PAYLOAD_MAX).map(|_| ALPHABET[spread(ALPHABET.len() as u64) as usize]).collect()
+            (0..PAYLOAD_MAX)
+                .map(|_| ALPHABET[spread(ALPHABET.len() as u64) as usize])
+                .collect()
         });
-        let message = std::str::from_utf8(&source[..bytes]).expect("the alphabet is ASCII");
-        Box::leak(format!(r#"{{"from":"rust","message":"{message}"}}"#).into_boxed_str())
+        let message = std::str::from_utf8(&source[..bytes])
+            .expect("the alphabet is ASCII");
+        Box::leak(
+            format!(r#"{{"from":"rust","message":"{message}"}}"#)
+                .into_boxed_str(),
+        )
     })
 }
 
@@ -162,22 +176,24 @@ fn body(bytes: usize) -> &'static str {
 /// to hide anything and does not need to be: its whole job is to stop a
 /// thousand identical waits from ending at the same instant.
 fn spread(bound: u64) -> u64 {
-    static STATE: AtomicU64 = AtomicU64::new(0x2545_F491_4F6C_DD1D);
-    let mut x = STATE.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed);
+    static STATE: AtomicU64 = AtomicU64::new(0x2545_f491_4f6c_dd1d);
+    let mut x = STATE.fetch_add(0x9e37_79b9_7f4a_7c15, Ordering::Relaxed);
     x ^= x >> 30;
-    x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
     x ^= x >> 27;
     x % bound
 }
 
 /// The routes, for an application that composes its own router.
 pub fn routes() -> Router {
-    Router::new().route("/_gufi/rust", get(rust).post(rust)).route("/_gufi/stats", get(stats))
+    Router::new()
+        .route("/_gufi/rust", get(rust).post(rust))
+        .route("/_gufi/stats", get(stats))
 }
 
 async fn rust(
     Query(ask): Query<Ask>,
-    received: Bytes
+    received: Bytes,
 ) -> claviron::axum::response::Response {
     // Read before waiting: the request body has to cross before there is
     // anything to answer, and a benchmark that slept first would time the
@@ -189,7 +205,7 @@ async fn rust(
     }
     let json = match ask.payload {
         Some(bytes) => body(bytes),
-        None => r#"{"from":"rust"}"#
+        None => r#"{"from":"rust"}"#,
     };
     // `HeaderValue::from` writes the number into its own inline buffer, so
     // reporting the size costs no allocation. Formatting it would have cost
@@ -198,9 +214,12 @@ async fn rust(
         [
             (CONTENT_TYPE, HeaderValue::from_static("application/json")),
             (CACHE_CONTROL, HeaderValue::from_static("no-store")),
-            (HeaderName::from_static("x-received"), HeaderValue::from(received as u64))
+            (
+                HeaderName::from_static("x-received"),
+                HeaderValue::from(received as u64),
+            ),
         ],
-        json
+        json,
     )
         .into_response()
 }

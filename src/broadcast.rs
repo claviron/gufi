@@ -19,13 +19,13 @@ use pyo3::types::{PyList, PyString};
 #[derive(Clone)]
 pub(crate) struct Publisher {
     service: Arc<BroadcastService>,
-    default_application: String
+    default_application: String,
 }
 
 impl Publisher {
     pub(crate) fn new(
         service: Arc<BroadcastService>,
-        default_application: String
+        default_application: String,
     ) -> Self {
         Self { service, default_application }
     }
@@ -34,7 +34,7 @@ impl Publisher {
 /// `claviron.broadcast`, as Python sees it.
 #[pyclass(name = "Broadcast", module = "claviron", frozen)]
 pub(crate) struct PythonBroadcast {
-    publisher: Publisher
+    publisher: Publisher,
 }
 
 impl PythonBroadcast {
@@ -57,29 +57,35 @@ impl PythonBroadcast {
         event: String,
         data: Option<&Bound<'_, PyAny>>,
         application: Option<String>,
-        socket_id: Option<String>
+        socket_id: Option<String>,
     ) -> PyResult<usize> {
         let channels = if let Ok(name) = channel.cast::<PyString>() {
             vec![name.to_str()?.to_owned()]
         } else if let Ok(names) = channel.cast::<PyList>() {
-            names.iter().map(|name| name.extract::<String>()).collect::<PyResult<Vec<_>>>()?
+            names
+                .iter()
+                .map(|name| name.extract::<String>())
+                .collect::<PyResult<Vec<_>>>()?
         } else {
             return Err(pyo3::exceptions::PyTypeError::new_err(
-                "channel is a name or a list of names"
+                "channel is a name or a list of names",
             ));
         };
         let data = match data {
             None => "{}".to_owned(),
             Some(value) => match value.cast::<PyString>() {
                 Ok(text) => text.to_str()?.to_owned(),
-                Err(_) => py.import("json")?.call_method1("dumps", (value,))?.extract()?
-            }
+                Err(_) => py
+                    .import("json")?
+                    .call_method1("dumps", (value,))?
+                    .extract()?,
+            },
         };
         let event = PublishedEvent { name: event, data, channels, socket_id };
-        let application = application.unwrap_or_else(|| self.publisher.default_application.clone());
-        self.publisher
-            .service
-            .publish(&application, &event)
-            .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))
+        let application = application
+            .unwrap_or_else(|| self.publisher.default_application.clone());
+        self.publisher.service.publish(&application, &event).map_err(|error| {
+            pyo3::exceptions::PyRuntimeError::new_err(error.to_string())
+        })
     }
 }

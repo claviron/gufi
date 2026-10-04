@@ -35,13 +35,13 @@ pub(crate) type Ring = Arc<dyn Fn(u64) + Send + Sync>;
 pub(crate) struct ChannelLayer {
     groups: GroupLayer,
     capacity: Option<usize>,
-    expiry: Option<Duration>
+    expiry: Option<Duration>,
 }
 
 impl ChannelLayer {
     pub(crate) fn new(
         groups: GroupLayer,
-        settings: &Channels
+        settings: &Channels,
     ) -> Self {
         Self { groups, capacity: settings.capacity, expiry: settings.expiry }
     }
@@ -52,14 +52,14 @@ impl ChannelLayer {
 pub(crate) struct ChannelCore {
     layer: ChannelLayer,
     ring: Ring,
-    next_id: Arc<dyn Fn() -> u64 + Send + Sync>
+    next_id: Arc<dyn Fn() -> u64 + Send + Sync>,
 }
 
 impl ChannelCore {
     pub(crate) fn new(
         layer: ChannelLayer,
         ring: Ring,
-        next_id: Arc<dyn Fn() -> u64 + Send + Sync>
+        next_id: Arc<dyn Fn() -> u64 + Send + Sync>,
     ) -> Self {
         Self { layer, ring, next_id }
     }
@@ -70,14 +70,17 @@ impl ChannelCore {
     /// A new box in this process, and its name.
     fn open(
         &self,
-        prefix: &str
+        prefix: &str,
     ) -> PyResult<String> {
-        self.layer.groups.open(prefix, self.layer.capacity, self.layer.expiry).map_err(error)
+        self.layer
+            .groups
+            .open(prefix, self.layer.capacity, self.layer.expiry)
+            .map_err(error)
     }
 
     fn close(
         &self,
-        channel: &str
+        channel: &str,
     ) {
         self.layer.groups.close(channel);
     }
@@ -86,12 +89,16 @@ impl ChannelCore {
     fn send(
         &self,
         channel: &str,
-        message: &[u8]
+        message: &[u8],
     ) -> PyResult<bool> {
-        match self.layer.groups.send(channel, bytes::Bytes::copy_from_slice(message)) {
+        match self
+            .layer
+            .groups
+            .send(channel, bytes::Bytes::copy_from_slice(message))
+        {
             Ok(()) => Ok(true),
             Err(GroupError::Full) => Ok(false),
-            Err(other) => Err(error(other))
+            Err(other) => Err(error(other)),
         }
     }
 
@@ -100,7 +107,7 @@ impl ChannelCore {
     fn receive<'py>(
         &self,
         py: Python<'py>,
-        channel: String
+        channel: String,
     ) -> PyResult<Bound<'py, PyAny>> {
         let id = (self.next_id)();
         match take_or_wake(&self.layer.groups, &self.ring, &channel, id)? {
@@ -111,17 +118,17 @@ impl ChannelCore {
                     id,
                     channel,
                     groups: self.layer.groups.clone(),
-                    ring: self.ring.clone()
-                }
+                    ring: self.ring.clone(),
+                },
             )?
-            .into_any())
+            .into_any()),
         }
     }
 
     fn group_add(
         &self,
         group: &str,
-        channel: &str
+        channel: &str,
     ) -> PyResult<()> {
         self.layer.groups.add(group, channel).map_err(error)
     }
@@ -129,7 +136,7 @@ impl ChannelCore {
     fn group_discard(
         &self,
         group: &str,
-        channel: &str
+        channel: &str,
     ) {
         self.layer.groups.discard(group, channel);
     }
@@ -138,9 +145,12 @@ impl ChannelCore {
     fn group_send(
         &self,
         group: &str,
-        message: &[u8]
+        message: &[u8],
     ) -> PyResult<usize> {
-        self.layer.groups.group_send(group, bytes::Bytes::copy_from_slice(message)).map_err(error)
+        self.layer
+            .groups
+            .group_send(group, bytes::Bytes::copy_from_slice(message))
+            .map_err(error)
     }
 }
 
@@ -151,7 +161,7 @@ pub(crate) struct ChannelWait {
     id: u64,
     channel: String,
     groups: GroupLayer,
-    ring: Ring
+    ring: Ring,
 }
 
 #[pymethods]
@@ -160,7 +170,7 @@ impl ChannelWait {
     /// waiting again — when another receive took it first.
     fn try_receive<'py>(
         &self,
-        py: Python<'py>
+        py: Python<'py>,
     ) -> PyResult<Option<Bound<'py, PyBytes>>> {
         Ok(take_or_wake(&self.groups, &self.ring, &self.channel, self.id)?
             .map(|message| PyBytes::new(py, &message)))
@@ -171,7 +181,7 @@ fn take_or_wake(
     groups: &GroupLayer,
     ring: &Ring,
     channel: &str,
-    id: u64
+    id: u64,
 ) -> PyResult<Option<bytes::Bytes>> {
     let ring = Arc::clone(ring);
     groups.receive_or_wake(channel, Box::new(move || ring(id))).map_err(error)
@@ -180,7 +190,9 @@ fn take_or_wake(
 fn error(error: GroupError) -> PyErr {
     match error {
         GroupError::UnknownChannel => PyKeyError::new_err(error.to_string()),
-        GroupError::NotProcessSpecific => PyValueError::new_err(error.to_string()),
-        _ => PyRuntimeError::new_err(error.to_string())
+        GroupError::NotProcessSpecific => {
+            PyValueError::new_err(error.to_string())
+        }
+        _ => PyRuntimeError::new_err(error.to_string()),
     }
 }

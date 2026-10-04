@@ -22,7 +22,7 @@ pyo3-async-runtimes = { version = "0.29.0", features = ["tokio-runtime"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1.0" }
 serde_yaml = { version = "0.9" }
-claviron = { version = "0.2.0-alpha.11", registry = "de02", default-features = false, features = [
+claviron = { path = "../claviron", default-features = false, features = [
     "http",
     "runner",
     "supervisor",
@@ -62,10 +62,10 @@ cli = ["dep:clap", "claviron/runner-cli"]
 # Serving HTTPS on a TCP door, and requiring a client certificate on it. Off
 # by default: most deployments put this process behind something that already
 # terminated TLS.
-tls = ["claviron/runner-tls"]
+tls = ["claviron/tls"]
 # WebSocket on gufi's own listener, spoken by the runner shell. Over Orbit the edge speaks
 # the protocol and this is not needed.
-websocket = ["claviron/runner-websocket"]
+websocket = ["claviron/websocket"]
 # LEGACY_LINUX: run on Linux kernels older than 5.3 (AlmaLinux 8's 4.18),
 # which have no pidfd for watching worker processes. Off by default.
 legacy-linux = ["claviron/legacy-linux"]

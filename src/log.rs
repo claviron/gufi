@@ -32,7 +32,7 @@ pub(crate) fn log(
     level: &str,
     message: &str,
     target: Option<&str>,
-    fields: Option<&Bound<'_, PyDict>>
+    fields: Option<&Bound<'_, PyDict>>,
 ) -> PyResult<bool> {
     let Some(channels) = installed() else { return Ok(false) };
     let mut owned: Vec<(String, Owned)> = Vec::new();
@@ -44,11 +44,21 @@ pub(crate) fn log(
     let name = level;
     let (level, lossy) = map_level(name);
     if lossy {
-        owned.push(("psr_level".to_owned(), Owned::Str(name.to_ascii_lowercase())));
+        owned.push((
+            "psr_level".to_owned(),
+            Owned::Str(name.to_ascii_lowercase()),
+        ));
     }
-    let fields: Vec<(&str, Value<'_>)> =
-        owned.iter().map(|(key, value)| (key.as_str(), value.borrow())).collect();
-    let record = Record { level, target: target.unwrap_or(""), message, fields: &fields };
+    let fields: Vec<(&str, Value<'_>)> = owned
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.borrow()))
+        .collect();
+    let record = Record {
+        level,
+        target: target.unwrap_or(""),
+        message,
+        fields: &fields,
+    };
     Ok(channels.emit(ChannelId::from_raw(channel), &record).is_ok())
 }
 
@@ -61,7 +71,7 @@ fn map_level(name: &str) -> (Level, bool) {
         "warning" | "warn" => (Level::Warn, false),
         "error" => (Level::Error, false),
         "critical" | "fatal" => (Level::Error, true),
-        _ => (Level::Info, true)
+        _ => (Level::Info, true),
     }
 }
 
@@ -69,7 +79,7 @@ enum Owned {
     Str(String),
     I64(i64),
     F64(f64),
-    Bool(bool)
+    Bool(bool),
 }
 
 impl Owned {
@@ -81,7 +91,7 @@ impl Owned {
         } else if value.is_instance_of::<PyInt>() {
             match value.extract::<i64>() {
                 Ok(number) => Self::I64(number),
-                Err(_) => Self::Str(value.str()?.to_string())
+                Err(_) => Self::Str(value.str()?.to_string()),
             }
         } else if value.is_instance_of::<PyFloat>() {
             Self::F64(value.extract()?)
@@ -99,7 +109,7 @@ impl Owned {
             Self::Str(text) => Value::Str(text),
             Self::I64(number) => Value::I64(*number),
             Self::F64(number) => Value::F64(*number),
-            Self::Bool(flag) => Value::Bool(*flag)
+            Self::Bool(flag) => Value::Bool(*flag),
         }
     }
 }

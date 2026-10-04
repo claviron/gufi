@@ -12,9 +12,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 use async_trait::async_trait;
 use claviron::app::invoke::InvocationRouter;
 use claviron::orbit::CounterProvider;
-use claviron::runtime::{AppState, Finalizable, Provider, ProviderOrder, registry};
+use claviron::runtime::{
+    AppState, Finalizable, Provider, ProviderOrder, registry,
+};
 
-use crate::asgi::{PythonApplication, PythonApplicationHandle, RunningPythonApplication};
+use crate::asgi::{
+    PythonApplication, PythonApplicationHandle, RunningPythonApplication,
+};
 use crate::routing::PythonService;
 
 pub(crate) struct PythonApplicationService {
@@ -26,7 +30,7 @@ pub(crate) struct PythonApplicationService {
     /// The launch's `broadcasting:` block: the application
     /// `claviron.broadcast` publishes to by default, and Channels' layer.
     #[cfg(feature = "broadcast")]
-    broadcasting: crate::options::Broadcasting
+    broadcasting: crate::options::Broadcasting,
 }
 
 impl PythonApplicationService {
@@ -34,7 +38,8 @@ impl PythonApplicationService {
         target: impl Into<String>,
         application_root: PathBuf,
         virtual_environment: PathBuf,
-        #[cfg(feature = "broadcast")] broadcasting: crate::options::Broadcasting
+        #[cfg(feature = "broadcast")]
+        broadcasting: crate::options::Broadcasting,
     ) -> Self {
         Self {
             target: target.into(),
@@ -43,7 +48,7 @@ impl PythonApplicationService {
             handle: Arc::new(OnceLock::new()),
             running: Mutex::new(None),
             #[cfg(feature = "broadcast")]
-            broadcasting
+            broadcasting,
         }
     }
 
@@ -68,12 +73,14 @@ impl Provider<AppState> for PythonApplicationService {
     /// the first sign is this boot failing on state that had not been
     /// published yet.
     fn order(&self) -> ProviderOrder {
-        ProviderOrder::new().after::<InvocationRouter>().after::<CounterProvider>()
+        ProviderOrder::new()
+            .after::<InvocationRouter>()
+            .after::<CounterProvider>()
     }
 
     async fn boot(
         &self,
-        state: &AppState
+        state: &AppState,
     ) -> registry::Result<()> {
         // A master with workers serves no traffic, and an interpreter it never
         // calls is a few hundred milliseconds and a copy of the application's
@@ -82,40 +89,49 @@ impl Provider<AppState> for PythonApplicationService {
             return Ok(());
         }
 
-        let invocations = state
-            .registry_ref()
-            .resolve::<InvocationRouter>()
-            .ok_or_else(|| registry::Error::msg("InvocationRouter is not registered"))?;
+        let invocations =
+            state.registry_ref().resolve::<InvocationRouter>().ok_or_else(
+                || registry::Error::msg("InvocationRouter is not registered"),
+            )?;
 
         let mut application = PythonApplication::new(self.target.clone())
             .map_err(|error| registry::Error::msg(error.to_string()))?
             .module_path(&self.application_root)
             .virtual_environment(&self.virtual_environment)
             .invocations(invocations);
-        if let Some(table) =
-            state.registry_ref().resolve::<CounterProvider>().and_then(|provider| provider.handle())
+        if let Some(table) = state
+            .registry_ref()
+            .resolve::<CounterProvider>()
+            .and_then(|provider| provider.handle())
         {
             application = application.counters(table);
         }
 
         #[cfg(feature = "broadcast")]
-        if let Some(service) =
-            state.registry_ref().resolve::<claviron::broadcast::BroadcastService>()
-        {
-            if let Some(default_application) = self.broadcasting.application.clone() {
-                application = application.broadcast(Arc::clone(&service), default_application);
+        if let Some(service) = state
+            .registry_ref()
+            .resolve::<claviron::broadcast::BroadcastService>(
+        ) {
+            if let Some(default_application) =
+                self.broadcasting.application.clone()
+            {
+                application = application
+                    .broadcast(Arc::clone(&service), default_application);
             }
             #[cfg(feature = "django")]
             if let Some(settings) = &self.broadcasting.channels {
-                application = application.channels(crate::django::channels::ChannelLayer::new(
-                    service.groups(),
-                    settings
-                ));
+                application = application.channels(
+                    crate::django::channels::ChannelLayer::new(
+                        service.groups(),
+                        settings,
+                    ),
+                );
             }
         }
 
-        let running =
-            application.boot().map_err(|error| registry::Error::msg(error.to_string()))?;
+        let running = application
+            .boot()
+            .map_err(|error| registry::Error::msg(error.to_string()))?;
         let _ = self.handle.set(running.handle());
         *self.running.lock().expect("python application lock") = Some(running);
         Ok(())
@@ -130,14 +146,15 @@ impl Provider<AppState> for PythonApplicationService {
 impl Finalizable<AppState> for PythonApplicationService {
     async fn finalize(
         &self,
-        _state: &AppState
+        _state: &AppState,
     ) -> registry::Result<()> {
-        let running = self.running.lock().expect("python application lock").take();
+        let running =
+            self.running.lock().expect("python application lock").take();
         match running {
-            Some(running) => {
-                running.shutdown().map_err(|error| registry::Error::msg(error.to_string()))
-            }
-            None => Ok(())
+            Some(running) => running
+                .shutdown()
+                .map_err(|error| registry::Error::msg(error.to_string())),
+            None => Ok(()),
         }
     }
 }

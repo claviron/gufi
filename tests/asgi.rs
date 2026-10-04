@@ -17,7 +17,7 @@ fn lifespan_is_started_and_shutdown() {
     let directory = tempfile::tempdir().unwrap();
     fs::write(
         directory.path().join("lifespan_fixture.py"),
-        include_str!("fixtures/lib/lifespan.py")
+        include_str!("fixtures/lib/lifespan.py"),
     )
     .unwrap();
 
@@ -32,8 +32,11 @@ fn lifespan_is_started_and_shutdown() {
 #[tokio::test]
 async fn http_request_is_dispatched_on_the_application_loop() {
     let directory = tempfile::tempdir().unwrap();
-    fs::write(directory.path().join("http_fixture.py"), include_str!("fixtures/lib/http.py"))
-        .unwrap();
+    fs::write(
+        directory.path().join("http_fixture.py"),
+        include_str!("fixtures/lib/http.py"),
+    )
+    .unwrap();
 
     let running = PythonApplication::new("http_fixture:app")
         .unwrap()
@@ -52,15 +55,21 @@ async fn http_request_is_dispatched_on_the_application_loop() {
                 query_string: Vec::new(),
                 headers: Vec::new(),
                 client: None,
-                server: None
+                server: None,
             },
-            http_body_util::Full::new(Bytes::from_static(b"request"))
+            http_body_util::Full::new(Bytes::from_static(b"request")),
         )
         .await
         .unwrap();
     assert_eq!(response.status, 201);
-    assert_eq!(response.headers, vec![(b"content-type".to_vec(), b"text/plain".to_vec())]);
-    let body = http_body_util::BodyExt::collect(response.body).await.unwrap().to_bytes();
+    assert_eq!(
+        response.headers,
+        vec![(b"content-type".to_vec(), b"text/plain".to_vec())]
+    );
+    let body = http_body_util::BodyExt::collect(response.body)
+        .await
+        .unwrap()
+        .to_bytes();
     assert_eq!(body.as_ref(), b"response");
     running.shutdown().unwrap();
 }
@@ -74,9 +83,13 @@ impl http_body::Body for Parts {
 
     fn poll_frame(
         mut self: std::pin::Pin<&mut Self>,
-        context: &mut std::task::Context<'_>
-    ) -> std::task::Poll<Option<std::result::Result<http_body::Frame<Bytes>, Self::Error>>> {
-        self.0.poll_recv(context).map(|part| part.map(|part| Ok(http_body::Frame::data(part))))
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<
+        Option<std::result::Result<http_body::Frame<Bytes>, Self::Error>>,
+    > {
+        self.0
+            .poll_recv(context)
+            .map(|part| part.map(|part| Ok(http_body::Frame::data(part))))
     }
 }
 
@@ -87,8 +100,11 @@ impl http_body::Body for Parts {
 #[tokio::test]
 async fn a_request_body_streams_and_disconnect_waits_for_the_reply() {
     let directory = tempfile::tempdir().unwrap();
-    fs::write(directory.path().join("stream_fixture.py"), include_str!("fixtures/lib/stream.py"))
-        .unwrap();
+    fs::write(
+        directory.path().join("stream_fixture.py"),
+        include_str!("fixtures/lib/stream.py"),
+    )
+    .unwrap();
     let running = PythonApplication::new("stream_fixture:app")
         .unwrap()
         .module_path(directory.path())
@@ -110,9 +126,9 @@ async fn a_request_body_streams_and_disconnect_waits_for_the_reply() {
                     query_string: Vec::new(),
                     headers: Vec::new(),
                     client: None,
-                    server: None
+                    server: None,
                 },
-                Parts(body)
+                Parts(body),
             )
             .await
     });
@@ -122,7 +138,10 @@ async fn a_request_body_streams_and_disconnect_waits_for_the_reply() {
     drop(parts);
 
     let response = answering.await.unwrap().unwrap();
-    let body = http_body_util::BodyExt::collect(response.body).await.unwrap().to_bytes();
+    let body = http_body_util::BodyExt::collect(response.body)
+        .await
+        .unwrap()
+        .to_bytes();
     // Two messages carried data, and the receive past the body was still
     // waiting when the reply began.
     assert_eq!(body.as_ref(), b"first|second;waiting");

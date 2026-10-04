@@ -1,89 +1,3 @@
-//! Options for a launch.
-//!
-//! [`GufiOptions`] holds what a deployment decides: the application's name,
-//! which doors it answers on, and whose forwarding headers it believes. The
-//! application's own code — routes, providers, services — is unaffected by
-//! any of it.
-//!
-//! Fill it from the command line, from your own configuration, or by hand.
-//!
-//! # Examples
-//!
-//! From the command line. `--help` is generated from the fields:
-//!
-//! ```no_run
-//! use gufi::{GufiOptions, Runner};
-//!
-//! #[tokio::main]
-//! async fn main() -> gufi::Result<()> {
-//!     Runner::new("main:app")
-//!         .with_options(GufiOptions::from_args())
-//!         .run(app::configure)
-//!         .await
-//! }
-//! # mod app {
-//! #     use claviron::runtime::{AppState, registry};
-//! #     pub fn configure(_: &AppState) -> registry::Result<()> { Ok(()) }
-//! # }
-//! ```
-//!
-//! ```text
-//! $ checkout --name checkout --uds /run/checkout.sock --trusted 10.0.0.0/8
-//! $ checkout --orbit                       # reached over shared memory
-//! $ checkout --tcp 0.0.0.0:8000 --h1       # HTTP/1 only
-//! ```
-//!
-//! # From a file
-//!
-//! A deployment outgrows a command line. Write the same fields into
-//! `.gufi/config.yaml` beside your application and start it with no
-//! arguments at all:
-//!
-//! ```yaml
-//! name: checkout
-//! orbit: true
-//! workers: 4
-//! trusted:
-//!   - 10.0.0.0/8
-//! ```
-//!
-//! ```text
-//! $ checkout                        # reads ./.gufi/config.yaml
-//! $ checkout --config /etc/checkout # reads it from there instead
-//! ```
-//!
-//! `.gufi` is also where Claviron reads what it owns, so `supervisor.yaml` —
-//! rotation, recovery, heartbeat, every deadline a worker fleet runs on —
-//! sits beside it. That is the whole reason for a directory rather than a
-//! file: asking for `workers: 4` is asking for a supervisor, and a
-//! supervisor's policy is not a flag.
-//!
-//! It is hidden, and beside `.venv` rather than inside it, because a Python
-//! project's own `config` may already belong to its framework.
-//!
-//! The command line wins over the file wherever it said anything, so one
-//! deployment can be pinned in the file and probed from the shell.
-//!
-//! Or set them in code, when the deployment is fixed or comes from elsewhere:
-//!
-//! ```no_run
-//! use gufi::{GufiOptions, Runner};
-//!
-//! let options = GufiOptions {
-//!     name: Some("checkout".to_owned()),
-//!     orbit: true,
-//!     ..Default::default()
-//! };
-//!
-//! let runner = Runner::new("main:app").with_options(options);
-//! ```
-//!
-//! A field left unset keeps the runner's default: the working directory's
-//! name, `.venv` beneath it, and a listener on `127.0.0.1:8000` when no door
-//! is named. Builder methods called after [`Runner::with_options`] take
-//! precedence, so a deployment can accept the command line and still pin one
-//! value itself.
-
 use std::path::PathBuf;
 
 pub use claviron::runner::RunnerOptions;
@@ -132,7 +46,7 @@ pub struct GufiOptions {
     /// from — so it is neither written into the file nor carried to a
     /// worker, which is handed the resolved launch instead.
     #[cfg_attr(feature = "cli", arg(short, long))]
-    pub config: Option<PathBuf>
+    pub config: Option<PathBuf>,
 }
 
 /// gufi's own keys, beside the runner's in the same flat file, and what a
@@ -143,7 +57,7 @@ pub(crate) struct Python {
     pub(crate) root: Option<PathBuf>,
     pub(crate) venv: Option<PathBuf>,
     #[cfg(feature = "broadcast")]
-    pub(crate) broadcasting: Option<Broadcasting>
+    pub(crate) broadcasting: Option<Broadcasting>,
 }
 
 /// A launch as gufi writes and carries it: the runner's options and its own.
@@ -158,14 +72,14 @@ impl GufiOptions {
                 root: self.root,
                 venv: self.venv,
                 #[cfg(feature = "broadcast")]
-                broadcasting: self.broadcasting
-            }
+                broadcasting: self.broadcasting,
+            },
         }
     }
 
     fn from_launch(
         launch: Launch,
-        config: Option<PathBuf>
+        config: Option<PathBuf>,
     ) -> Self {
         Self {
             runner: launch.runner,
@@ -173,7 +87,7 @@ impl GufiOptions {
             venv: launch.own.venv,
             #[cfg(feature = "broadcast")]
             broadcasting: launch.own.broadcasting,
-            config
+            config,
         }
     }
 }
@@ -190,7 +104,7 @@ pub struct Broadcasting {
     /// over the broadcast service's groups. Absent, the layer is not
     /// installed.
     #[cfg(feature = "django")]
-    pub channels: Option<Channels>
+    pub channels: Option<Channels>,
 }
 
 /// `broadcasting.channels:` — the limits of every consumer's box. Unwritten
@@ -208,18 +122,20 @@ pub struct Channels {
         serialize_with = "serialize_expiry",
         deserialize_with = "claviron::helpers::de::deserialize_optional_duration"
     )]
-    pub expiry: Option<std::time::Duration>
+    pub expiry: Option<std::time::Duration>,
 }
 
 /// In milliseconds, which the reader parses back without loss.
 #[cfg(feature = "django")]
 fn serialize_expiry<S: serde::Serializer>(
     value: &Option<std::time::Duration>,
-    serializer: S
+    serializer: S,
 ) -> Result<S::Ok, S::Error> {
     match value {
-        Some(expiry) => serializer.collect_str(&format_args!("{}ms", expiry.as_millis())),
-        None => serializer.serialize_none()
+        Some(expiry) => {
+            serializer.collect_str(&format_args!("{}ms", expiry.as_millis()))
+        }
+        None => serializer.serialize_none(),
     }
 }
 
@@ -243,9 +159,9 @@ impl GufiOptions {
 
         match <Self as clap::Parser>::parse().resolve() {
             Ok(options) => options,
-            Err(message) => {
-                Self::command().error(clap::error::ErrorKind::InvalidValue, message).exit()
-            }
+            Err(message) => Self::command()
+                .error(clap::error::ErrorKind::InvalidValue, message)
+                .exit(),
         }
     }
 
@@ -262,7 +178,11 @@ impl GufiOptions {
     pub fn config_path(&self) -> PathBuf {
         match &self.config {
             Some(path) => path.clone(),
-            None => self.root.clone().unwrap_or_else(|| PathBuf::from(".")).join(CONFIG_FILE)
+            None => self
+                .root
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(CONFIG_FILE),
         }
     }
 
@@ -281,16 +201,24 @@ impl GufiOptions {
         let path = self.config_path();
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound && self.config.is_none() => {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && self.config.is_none() =>
+            {
                 return Ok(self);
             }
-            Err(error) => return Err(format!("read {}: {error}", path.display()))
+            Err(error) => {
+                return Err(format!("read {}: {error}", path.display()));
+            }
         };
         let written: Launch = serde_yaml::from_str(&text)
             .map_err(|error| format!("parse {}: {error}", path.display()))?;
         let written = Self::from_launch(written, None);
         let mut resolved = self.over(written);
-        resolved.runner.validate().map_err(|error| format!("{}: {error}", path.display()))?;
+        resolved
+            .runner
+            .validate()
+            .map_err(|error| format!("{}: {error}", path.display()))?;
         resolved.config = Some(path);
         Ok(resolved)
     }
@@ -299,7 +227,7 @@ impl GufiOptions {
     /// wherever it said anything.
     fn over(
         self,
-        written: Self
+        written: Self,
     ) -> Self {
         Self {
             runner: self.runner.over(written.runner),
@@ -307,7 +235,7 @@ impl GufiOptions {
             venv: self.venv.or(written.venv),
             #[cfg(feature = "broadcast")]
             broadcasting: self.broadcasting.or(written.broadcasting),
-            config: self.config
+            config: self.config,
         }
     }
 }
@@ -318,7 +246,10 @@ impl GufiOptions {
 /// root is the application rather than a place it was started from. One
 /// directory, one virtual environment, one name.
 pub(crate) fn default_name(root: &std::path::Path) -> Option<String> {
-    root.file_name()?.to_str().filter(|name| !name.is_empty()).map(ToOwned::to_owned)
+    root.file_name()?
+        .to_str()
+        .filter(|name| !name.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 #[cfg(test)]

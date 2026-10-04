@@ -14,7 +14,9 @@ use bytes::Bytes;
 use claviron::app::invoke::InvocationRouter;
 use claviron::orbit::transport::Message;
 use pyo3::prelude::*;
-use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods, PyList, PyListMethods, PyModule};
+use pyo3::types::{
+    PyAnyMethods, PyDict, PyDictMethods, PyList, PyListMethods, PyModule,
+};
 use tokio::sync::{mpsc as chunks, oneshot};
 
 const APPLICATION_DRIVER: &str = r#"
@@ -309,7 +311,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("invalid ASGI target '{target}': expected non-empty module:attribute")]
+    #[error(
+        "invalid ASGI target '{target}': expected non-empty module:attribute"
+    )]
     InvalidTarget { target: String },
     #[error("Python module path does not exist: {0}")]
     MissingModulePath(PathBuf),
@@ -326,7 +330,7 @@ pub enum Error {
     #[error("Python application stopped before completing the HTTP response")]
     ResponseChannelClosed,
     #[error("invalid ASGI HTTP response: {0}")]
-    InvalidHttpResponse(String)
+    InvalidHttpResponse(String),
 }
 
 #[derive(Clone, Debug)]
@@ -339,7 +343,7 @@ pub struct HttpRequest {
     pub query_string: Vec<u8>,
     pub headers: Vec<(Vec<u8>, Vec<u8>)>,
     pub client: Option<SocketAddr>,
-    pub server: Option<SocketAddr>
+    pub server: Option<SocketAddr>,
 }
 
 /// A reply's head, delivered with the first part of its body.
@@ -352,7 +356,7 @@ pub struct HttpRequest {
 pub struct HttpResponse {
     pub status: u16,
     pub headers: Vec<(Vec<u8>, Vec<u8>)>,
-    pub body: ResponseStream
+    pub body: ResponseStream,
 }
 
 /// A reply body as the application sends it: the first part, then whatever
@@ -363,7 +367,7 @@ pub struct ResponseStream {
     rest: Option<chunks::Receiver<Result<Bytes>>>,
     /// The request this answers: dropped before its end, this reply tells it
     /// the client is gone.
-    request: Option<BodyFeed>
+    request: Option<BodyFeed>,
 }
 
 /// Whoever reads a reply — a socket's connection, the lane's slot — drops it
@@ -385,7 +389,7 @@ impl http_body::Body for ResponseStream {
 
     fn poll_frame(
         mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>
+        cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<http_body::Frame<Bytes>>>> {
         use std::task::Poll;
         if let Some(first) = self.first.take() {
@@ -393,12 +397,14 @@ impl http_body::Body for ResponseStream {
         }
         let Some(rest) = self.rest.as_mut() else { return Poll::Ready(None) };
         match rest.poll_recv(cx) {
-            Poll::Ready(Some(part)) => Poll::Ready(Some(part.map(http_body::Frame::data))),
+            Poll::Ready(Some(part)) => {
+                Poll::Ready(Some(part.map(http_body::Frame::data)))
+            }
             Poll::Ready(None) => {
                 self.rest = None;
                 Poll::Ready(None)
             }
-            Poll::Pending => Poll::Pending
+            Poll::Pending => Poll::Pending,
         }
     }
 
@@ -410,10 +416,10 @@ impl http_body::Body for ResponseStream {
     /// hand, and an ingress may hand it over before the head.
     fn size_hint(&self) -> http_body::SizeHint {
         match &self.rest {
-            None => {
-                http_body::SizeHint::with_exact(self.first.as_ref().map_or(0, |b| b.len() as u64))
-            }
-            Some(_) => http_body::SizeHint::default()
+            None => http_body::SizeHint::with_exact(
+                self.first.as_ref().map_or(0, |b| b.len() as u64),
+            ),
+            Some(_) => http_body::SizeHint::default(),
         }
     }
 }
@@ -421,7 +427,7 @@ impl http_body::Body for ResponseStream {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApplicationTarget {
     module: String,
-    attribute: String
+    attribute: String,
 }
 
 impl ApplicationTarget {
@@ -457,7 +463,7 @@ pub struct PythonApplication {
     #[cfg(feature = "broadcast")]
     broadcast: Option<crate::broadcast::Publisher>,
     #[cfg(feature = "django")]
-    channels: Option<crate::django::channels::ChannelLayer>
+    channels: Option<crate::django::channels::ChannelLayer>,
 }
 
 impl PythonApplication {
@@ -471,13 +477,13 @@ impl PythonApplication {
             #[cfg(feature = "broadcast")]
             broadcast: None,
             #[cfg(feature = "django")]
-            channels: None
+            channels: None,
         })
     }
 
     pub fn module_path(
         mut self,
-        path: impl Into<PathBuf>
+        path: impl Into<PathBuf>,
     ) -> Self {
         self.module_paths.push(path.into());
         self
@@ -485,7 +491,7 @@ impl PythonApplication {
 
     pub fn virtual_environment(
         mut self,
-        path: impl Into<PathBuf>
+        path: impl Into<PathBuf>,
     ) -> Self {
         self.virtual_environment = Some(path.into());
         self
@@ -497,7 +503,7 @@ impl PythonApplication {
 
     pub fn invocations(
         mut self,
-        router: Arc<InvocationRouter>
+        router: Arc<InvocationRouter>,
     ) -> Self {
         self.invocations = Some(router);
         self
@@ -509,9 +515,12 @@ impl PythonApplication {
     pub fn broadcast(
         mut self,
         service: Arc<claviron::broadcast::BroadcastService>,
-        default_application: String
+        default_application: String,
     ) -> Self {
-        self.broadcast = Some(crate::broadcast::Publisher::new(service, default_application));
+        self.broadcast = Some(crate::broadcast::Publisher::new(
+            service,
+            default_application,
+        ));
         self
     }
 
@@ -520,7 +529,7 @@ impl PythonApplication {
     #[cfg(feature = "django")]
     pub(crate) fn channels(
         mut self,
-        layer: crate::django::channels::ChannelLayer
+        layer: crate::django::channels::ChannelLayer,
     ) -> Self {
         self.channels = Some(layer);
         self
@@ -529,7 +538,7 @@ impl PythonApplication {
     /// The fleet's counter table, as `claviron.counter(key)`.
     pub fn counters(
         mut self,
-        table: Arc<claviron::orbit::Counter>
+        table: Arc<claviron::orbit::Counter>,
     ) -> Self {
         self.counters = Some(table);
         self
@@ -556,27 +565,31 @@ impl PythonApplication {
             .name("claviron-asgi".to_owned())
             .spawn({
                 let commands = commands.clone();
-                move || run_application(definition, commands, doorbell, startup_tx)
+                move || {
+                    run_application(definition, commands, doorbell, startup_tx)
+                }
             })
             .map_err(|error| Error::Python(error.to_string()))?;
 
         match startup_rx.recv() {
-            Ok(Ok(())) => Ok(RunningPythonApplication { commands, handle: Some(handle) }),
+            Ok(Ok(())) => {
+                Ok(RunningPythonApplication { commands, handle: Some(handle) })
+            }
             Ok(Err(error)) => {
                 join_thread(handle)?;
                 Err(Error::Python(error))
             }
             Err(_) => match join_thread(handle) {
                 Ok(()) => Err(Error::StartupChannelClosed),
-                Err(error) => Err(error)
-            }
+                Err(error) => Err(error),
+            },
         }
     }
 }
 
 pub struct RunningPythonApplication {
     commands: Commands,
-    handle: Option<JoinHandle<Result<()>>>
+    handle: Option<JoinHandle<Result<()>>>,
 }
 
 impl RunningPythonApplication {
@@ -592,7 +605,7 @@ impl RunningPythonApplication {
     fn join(&mut self) -> Result<()> {
         match self.handle.take() {
             Some(handle) => join_thread(handle),
-            None => Ok(())
+            None => Ok(()),
         }
     }
 }
@@ -606,7 +619,7 @@ impl Drop for RunningPythonApplication {
 
 #[derive(Clone)]
 pub struct PythonApplicationHandle {
-    commands: Commands
+    commands: Commands,
 }
 
 impl PythonApplicationHandle {
@@ -626,16 +639,16 @@ impl PythonApplicationHandle {
     pub async fn handle_http<B>(
         &self,
         request: HttpRequest,
-        body: B
+        body: B,
     ) -> Result<HttpResponse>
     where
         B: http_body::Body<Data = Bytes> + Send + 'static,
-        B::Error: std::fmt::Display + Send
+        B::Error: std::fmt::Display + Send,
     {
         let feed = BodyFeed {
             id: EXCHANGE_IDS.fetch_add(1, Ordering::Relaxed),
             shared: Arc::new(BodyInbound::default()),
-            commands: self.commands.clone()
+            commands: self.commands.clone(),
         };
         let mut body = Box::pin(body);
         let more = feed.take_ready(body.as_mut());
@@ -644,7 +657,7 @@ impl PythonApplicationHandle {
             .send(ApplicationCommand::Http {
                 request: Box::new(request),
                 body: feed.clone(),
-                response
+                response,
             })
             .map_err(|_| Error::ApplicationStopped)?;
         if more {
@@ -657,7 +670,7 @@ impl PythonApplicationHandle {
     /// session: first `decision`, then messages either way.
     pub fn handle_websocket(
         &self,
-        request: HttpRequest
+        request: HttpRequest,
     ) -> Result<WebSocketSession> {
         let (decision, decided) = oneshot::channel();
         // One message in flight each way: the side that is behind makes the
@@ -665,12 +678,20 @@ impl PythonApplicationHandle {
         let id = EXCHANGE_IDS.fetch_add(1, Ordering::Relaxed);
         let shared = Arc::new(Inbound::default());
         let (outbound_tx, outbound) = chunks::channel(1);
-        let ends =
-            WebSocketEnds { id, decision, inbound: Arc::clone(&shared), outbound: outbound_tx };
+        let ends = WebSocketEnds {
+            id,
+            decision,
+            inbound: Arc::clone(&shared),
+            outbound: outbound_tx,
+        };
         self.commands
-            .send(ApplicationCommand::WebSocket { request: Box::new(request), ends })
+            .send(ApplicationCommand::WebSocket {
+                request: Box::new(request),
+                ends,
+            })
             .map_err(|_| Error::ApplicationStopped)?;
-        let inbound = WebSocketInbound { id, shared, commands: self.commands.clone() };
+        let inbound =
+            WebSocketInbound { id, shared, commands: self.commands.clone() };
         Ok(WebSocketSession { decision: decided, inbound, outbound })
     }
 }
@@ -688,13 +709,13 @@ impl PythonApplicationHandle {
 struct Commands {
     queue: mpsc::Sender<ApplicationCommand>,
     bell: Arc<UnixStream>,
-    armed: Arc<AtomicBool>
+    armed: Arc<AtomicBool>,
 }
 
 impl Commands {
     fn send(
         &self,
-        command: ApplicationCommand
+        command: ApplicationCommand,
     ) -> std::result::Result<(), mpsc::SendError<ApplicationCommand>> {
         self.queue.send(command)?;
         if !self.armed.swap(true, Ordering::AcqRel) {
@@ -710,19 +731,21 @@ impl Commands {
 struct Doorbell {
     queue: mpsc::Receiver<ApplicationCommand>,
     bell: UnixStream,
-    armed: Arc<AtomicBool>
+    armed: Arc<AtomicBool>,
 }
 
 fn commands() -> Result<(Commands, Doorbell)> {
     let (queue, receiver) = mpsc::channel();
-    let (write, read) = UnixStream::pair().map_err(|error| Error::Python(error.to_string()))?;
+    let (write, read) =
+        UnixStream::pair().map_err(|error| Error::Python(error.to_string()))?;
     for end in [&write, &read] {
-        end.set_nonblocking(true).map_err(|error| Error::Python(error.to_string()))?;
+        end.set_nonblocking(true)
+            .map_err(|error| Error::Python(error.to_string()))?;
     }
     let armed = Arc::new(AtomicBool::new(false));
     Ok((
         Commands { queue, bell: Arc::new(write), armed: Arc::clone(&armed) },
-        Doorbell { queue: receiver, bell: read, armed }
+        Doorbell { queue: receiver, bell: read, armed },
     ))
 }
 
@@ -730,16 +753,16 @@ enum ApplicationCommand {
     Http {
         request: Box<HttpRequest>,
         body: BodyFeed,
-        response: oneshot::Sender<Result<HttpResponse>>
+        response: oneshot::Sender<Result<HttpResponse>>,
     },
     WebSocket {
         request: Box<HttpRequest>,
-        ends: WebSocketEnds
+        ends: WebSocketEnds,
     },
     /// A WebSocket the application is waiting on has a message, or its client
     /// is gone. The loop resolves the wait itself.
     Ready(u64),
-    Shutdown
+    Shutdown,
 }
 
 /// How the application answered a WebSocket's `websocket.connect`.
@@ -750,7 +773,7 @@ pub enum WebSocketDecision {
     Accept { headers: Vec<(Vec<u8>, Vec<u8>)> },
     /// `websocket.close` before accepting, or the application ending first:
     /// the handshake is refused (ASGI says 403).
-    Reject
+    Reject,
 }
 
 /// The Rust side of one WebSocket: the answer to the handshake, then messages
@@ -760,7 +783,7 @@ pub struct WebSocketSession {
     /// The client's messages, to the application.
     pub inbound: WebSocketInbound,
     /// The application's messages, to the client.
-    pub outbound: chunks::Receiver<Message>
+    pub outbound: chunks::Receiver<Message>,
 }
 
 /// The application's side of the same, handed to Python.
@@ -768,7 +791,7 @@ struct WebSocketEnds {
     id: u64,
     decision: oneshot::Sender<WebSocketDecision>,
     inbound: Arc<Inbound>,
-    outbound: chunks::Sender<Message>
+    outbound: chunks::Sender<Message>,
 }
 
 /// The client's messages waiting for the application.
@@ -782,7 +805,7 @@ struct WebSocketEnds {
 struct Inbound {
     state: Mutex<InboundState>,
     /// Signalled when the application takes a message: room for the next.
-    room: tokio::sync::Notify
+    room: tokio::sync::Notify,
 }
 
 #[derive(Default)]
@@ -793,14 +816,14 @@ struct InboundState {
     /// The application asked and found nothing; the next message rings.
     waiting: bool,
     /// The application is gone; nothing more is worth queueing.
-    abandoned: bool
+    abandoned: bool,
 }
 
 /// Where the client's messages go, held by the ingress.
 pub struct WebSocketInbound {
     id: u64,
     shared: Arc<Inbound>,
-    commands: Commands
+    commands: Commands,
 }
 
 impl WebSocketInbound {
@@ -809,7 +832,7 @@ impl WebSocketInbound {
     /// `false` once the application is gone.
     pub async fn deliver(
         &self,
-        message: Message
+        message: Message,
     ) -> bool {
         let mut message = Some(message);
         loop {
@@ -822,11 +845,15 @@ impl WebSocketInbound {
                     return false;
                 }
                 if state.queue.is_empty() {
-                    state.queue.push_back(message.take().expect("delivered once"));
+                    state
+                        .queue
+                        .push_back(message.take().expect("delivered once"));
                     let ring = std::mem::take(&mut state.waiting);
                     drop(state);
                     if ring {
-                        let _ = self.commands.send(ApplicationCommand::Ready(self.id));
+                        let _ = self
+                            .commands
+                            .send(ApplicationCommand::Ready(self.id));
                     }
                     return true;
                 }
@@ -849,7 +876,8 @@ impl WebSocketInbound {
 
 /// One numbering for WebSockets and HTTP requests: the loop keeps their waits
 /// in one table, by id.
-static EXCHANGE_IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+static EXCHANGE_IDS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
 
 /// A request body on its way to the application.
 ///
@@ -861,7 +889,7 @@ static EXCHANGE_IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 struct BodyInbound {
     state: Mutex<BodyState>,
     /// Signalled when the application takes a part, or lets the request go.
-    room: tokio::sync::Notify
+    room: tokio::sync::Notify,
 }
 
 #[derive(Default)]
@@ -880,7 +908,7 @@ struct BodyState {
     /// The application asked and found nothing; the next change rings.
     waiting: bool,
     /// The application is done with the request; nothing more is read.
-    abandoned: bool
+    abandoned: bool,
 }
 
 /// Both ends of a request body: the ingress feeds it, the exchange reads it.
@@ -888,13 +916,13 @@ struct BodyState {
 struct BodyFeed {
     id: u64,
     shared: Arc<BodyInbound>,
-    commands: Commands
+    commands: Commands,
 }
 
 impl std::fmt::Debug for BodyFeed {
     fn fmt(
         &self,
-        f: &mut std::fmt::Formatter<'_>
+        f: &mut std::fmt::Formatter<'_>,
     ) -> std::fmt::Result {
         f.debug_struct("BodyFeed").field("id", &self.id).finish_non_exhaustive()
     }
@@ -907,11 +935,11 @@ impl BodyFeed {
     /// `true` when there is more to read.
     fn take_ready<B>(
         &self,
-        mut body: std::pin::Pin<&mut B>
+        mut body: std::pin::Pin<&mut B>,
     ) -> bool
     where
         B: http_body::Body<Data = Bytes>,
-        B::Error: std::fmt::Display
+        B::Error: std::fmt::Display,
     {
         use std::task::{Context, Poll, Waker};
         let mut context = Context::from_waker(Waker::noop());
@@ -933,7 +961,7 @@ impl BodyFeed {
                     state.ended = true;
                     return false;
                 }
-                Poll::Pending => return true
+                Poll::Pending => return true,
             }
         }
         true
@@ -943,10 +971,10 @@ impl BodyFeed {
     /// last.
     async fn pump<B>(
         self,
-        mut body: std::pin::Pin<Box<B>>
+        mut body: std::pin::Pin<Box<B>>,
     ) where
         B: http_body::Body<Data = Bytes>,
-        B::Error: std::fmt::Display
+        B::Error: std::fmt::Display,
     {
         use http_body_util::BodyExt;
         loop {
@@ -974,7 +1002,7 @@ impl BodyFeed {
     /// done with the request.
     async fn deliver(
         &self,
-        part: Bytes
+        part: Bytes,
     ) -> bool {
         let mut part = Some(part);
         loop {
@@ -1003,7 +1031,7 @@ impl BodyFeed {
 
     fn change(
         &self,
-        apply: impl FnOnce(&mut BodyState)
+        apply: impl FnOnce(&mut BodyState),
     ) {
         let mut state = self.shared.state.lock().unwrap();
         apply(&mut state);
@@ -1012,7 +1040,7 @@ impl BodyFeed {
 
     fn ring(
         &self,
-        mut state: std::sync::MutexGuard<'_, BodyState>
+        mut state: std::sync::MutexGuard<'_, BodyState>,
     ) {
         let ring = std::mem::take(&mut state.waiting);
         drop(state);
@@ -1025,7 +1053,7 @@ impl BodyFeed {
 #[pyclass]
 struct LifespanControl {
     startup: Mutex<Option<mpsc::SyncSender<std::result::Result<(), String>>>>,
-    doorbell: Mutex<Doorbell>
+    doorbell: Mutex<Doorbell>,
 }
 
 #[pymethods]
@@ -1036,7 +1064,7 @@ impl LifespanControl {
 
     fn startup_failed(
         &self,
-        message: String
+        message: String,
     ) {
         self.report_startup(Err(message));
     }
@@ -1055,9 +1083,11 @@ impl LifespanControl {
     /// the two apart is the sentence the application raised.
     fn lifespan_absent(
         &self,
-        detail: String
+        detail: String,
     ) {
-        tracing::debug!("🐍 application declines the ASGI lifespan protocol: {detail}");
+        tracing::debug!(
+            "🐍 application declines the ASGI lifespan protocol: {detail}"
+        );
     }
 
     /// The descriptor the loop watches for requests.
@@ -1069,7 +1099,7 @@ impl LifespanControl {
     /// is shutting down, or nothing can send any more.
     fn take_exchanges(
         &self,
-        py: Python<'_>
+        py: Python<'_>,
     ) -> PyResult<(Vec<Py<PyAny>>, Vec<u64>, bool)> {
         let doorbell = self.doorbell.lock().unwrap();
         let mut rung = [0u8; 64];
@@ -1081,7 +1111,7 @@ impl LifespanControl {
                     break;
                 }
                 Ok(_) => {}
-                Err(_) => break
+                Err(_) => break,
             }
         }
         doorbell.armed.store(false, Ordering::SeqCst);
@@ -1092,16 +1122,27 @@ impl LifespanControl {
             match doorbell.queue.try_recv() {
                 Ok(ApplicationCommand::Ready(id)) => ready.push(id),
                 Ok(ApplicationCommand::Http { request, body, response }) => {
-                    exchanges
-                        .push(Py::new(py, HttpExchange::new(*request, body, response))?.into_any());
+                    exchanges.push(
+                        Py::new(
+                            py,
+                            HttpExchange::new(*request, body, response),
+                        )?
+                        .into_any(),
+                    );
                 }
                 Ok(ApplicationCommand::WebSocket { request, ends }) => {
-                    exchanges.push(Py::new(py, WebSocketExchange::new(*request, ends))?.into_any());
+                    exchanges.push(
+                        Py::new(py, WebSocketExchange::new(*request, ends))?
+                            .into_any(),
+                    );
                 }
-                Ok(ApplicationCommand::Shutdown) | Err(mpsc::TryRecvError::Disconnected) => {
+                Ok(ApplicationCommand::Shutdown)
+                | Err(mpsc::TryRecvError::Disconnected) => {
                     return Ok((exchanges, ready, true));
                 }
-                Err(mpsc::TryRecvError::Empty) => return Ok((exchanges, ready, closed))
+                Err(mpsc::TryRecvError::Empty) => {
+                    return Ok((exchanges, ready, closed));
+                }
             }
         }
     }
@@ -1110,7 +1151,7 @@ impl LifespanControl {
 impl LifespanControl {
     fn report_startup(
         &self,
-        result: std::result::Result<(), String>
+        result: std::result::Result<(), String>,
     ) {
         if let Some(sender) = self.startup.lock().unwrap().take() {
             let _ = sender.send(result);
@@ -1122,7 +1163,7 @@ impl LifespanControl {
 struct HttpExchange {
     request: HttpRequest,
     body: BodyFeed,
-    response: Mutex<HttpResponseState>
+    response: Mutex<HttpResponseState>,
 }
 
 struct HttpResponseState {
@@ -1132,14 +1173,14 @@ struct HttpResponseState {
     headers: Vec<(Vec<u8>, Vec<u8>)>,
     /// After it, while `more_body` is true: where the rest goes.
     rest: Option<chunks::Sender<Result<Bytes>>>,
-    complete: bool
+    complete: bool,
 }
 
 impl HttpExchange {
     fn new(
         request: HttpRequest,
         body: BodyFeed,
-        sender: oneshot::Sender<Result<HttpResponse>>
+        sender: oneshot::Sender<Result<HttpResponse>>,
     ) -> Self {
         Self {
             request,
@@ -1149,8 +1190,8 @@ impl HttpExchange {
                 status: None,
                 headers: Vec::new(),
                 rest: None,
-                complete: false
-            })
+                complete: false,
+            }),
         }
     }
 }
@@ -1211,7 +1252,7 @@ impl HttpExchange {
     /// a request that did not arrive whole.
     fn try_receive<'py>(
         &self,
-        py: Python<'py>
+        py: Python<'py>,
     ) -> PyResult<Option<Bound<'py, PyDict>>> {
         let mut state = self.body.shared.state.lock().unwrap();
         let event = PyDict::new(py);
@@ -1242,18 +1283,22 @@ impl HttpExchange {
 
     #[getter]
     fn client(&self) -> Option<(String, u16)> {
-        self.request.client.map(|address| (address.ip().to_string(), address.port()))
+        self.request
+            .client
+            .map(|address| (address.ip().to_string(), address.port()))
     }
 
     #[getter]
     fn server(&self) -> Option<(String, u16)> {
-        self.request.server.map(|address| (address.ip().to_string(), address.port()))
+        self.request
+            .server
+            .map(|address| (address.ip().to_string(), address.port()))
     }
 
     fn response_start(
         &self,
         status: u16,
-        headers: Vec<(Vec<u8>, Vec<u8>)>
+        headers: Vec<(Vec<u8>, Vec<u8>)>,
     ) -> PyResult<()> {
         if !(100..=999).contains(&status) {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -1263,12 +1308,12 @@ impl HttpExchange {
         let mut response = self.response.lock().unwrap();
         if response.complete {
             return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                "HTTP response is already complete"
+                "HTTP response is already complete",
             ));
         }
         if response.status.replace(status).is_some() {
             return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                "ASGI application sent http.response.start more than once"
+                "ASGI application sent http.response.start more than once",
             ));
         }
         response.headers = headers;
@@ -1283,17 +1328,17 @@ impl HttpExchange {
         &self,
         py: Python<'py>,
         body: Vec<u8>,
-        more_body: bool
+        more_body: bool,
     ) -> PyResult<Option<Bound<'py, PyAny>>> {
         let mut response = self.response.lock().unwrap();
         let Some(status) = response.status else {
             return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                "ASGI application sent a response body before response start"
+                "ASGI application sent a response body before response start",
             ));
         };
         if response.complete {
             return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                "HTTP response is already complete"
+                "HTTP response is already complete",
             ));
         }
         response.complete = !more_body;
@@ -1318,13 +1363,21 @@ impl HttpExchange {
             let _ = sender.send(Ok(HttpResponse {
                 status,
                 headers: std::mem::take(&mut response.headers),
-                body: ResponseStream { first, rest, request: Some(self.body.clone()) }
+                body: ResponseStream {
+                    first,
+                    rest,
+                    request: Some(self.body.clone()),
+                },
             }));
             return Ok(None);
         }
 
         // A later part: to the stream the first one opened.
-        let tx = if more_body { response.rest.clone() } else { response.rest.take() };
+        let tx = if more_body {
+            response.rest.clone()
+        } else {
+            response.rest.take()
+        };
         drop(response);
         let Some(tx) = tx else { return Ok(None) };
         if part.is_empty() {
@@ -1346,7 +1399,7 @@ impl HttpExchange {
 
     fn fail(
         &self,
-        message: String
+        message: String,
     ) {
         let mut response = self.response.lock().unwrap();
         response.complete = true;
@@ -1381,20 +1434,20 @@ struct WebSocketExchange {
     request: HttpRequest,
     decision: Mutex<Option<oneshot::Sender<WebSocketDecision>>>,
     inbound: Arc<Inbound>,
-    outbound: Mutex<Option<chunks::Sender<Message>>>
+    outbound: Mutex<Option<chunks::Sender<Message>>>,
 }
 
 impl WebSocketExchange {
     fn new(
         request: HttpRequest,
-        ends: WebSocketEnds
+        ends: WebSocketEnds,
     ) -> Self {
         Self {
             id: ends.id,
             request,
             decision: Mutex::new(Some(ends.decision)),
             inbound: ends.inbound,
-            outbound: Mutex::new(Some(ends.outbound))
+            outbound: Mutex::new(Some(ends.outbound)),
         }
     }
 
@@ -1454,28 +1507,35 @@ impl WebSocketExchange {
 
     #[getter]
     fn client(&self) -> Option<(String, u16)> {
-        self.request.client.map(|address| (address.ip().to_string(), address.port()))
+        self.request
+            .client
+            .map(|address| (address.ip().to_string(), address.port()))
     }
 
     #[getter]
     fn server(&self) -> Option<(String, u16)> {
-        self.request.server.map(|address| (address.ip().to_string(), address.port()))
+        self.request
+            .server
+            .map(|address| (address.ip().to_string(), address.port()))
     }
 
     /// `websocket.accept`.
     fn accept(
         &self,
         subprotocol: Option<String>,
-        headers: Vec<(Vec<u8>, Vec<u8>)>
+        headers: Vec<(Vec<u8>, Vec<u8>)>,
     ) -> PyResult<()> {
         let Some(decision) = self.decision.lock().unwrap().take() else {
             return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                "the WebSocket was already accepted or closed"
+                "the WebSocket was already accepted or closed",
             ));
         };
         let mut headers = headers;
         if let Some(subprotocol) = subprotocol {
-            headers.push((b"sec-websocket-protocol".to_vec(), subprotocol.into_bytes()));
+            headers.push((
+                b"sec-websocket-protocol".to_vec(),
+                subprotocol.into_bytes(),
+            ));
         }
         let _ = decision.send(WebSocketDecision::Accept { headers });
         Ok(())
@@ -1487,7 +1547,7 @@ impl WebSocketExchange {
     /// message comes.
     fn try_receive(
         &self,
-        py: Python<'_>
+        py: Python<'_>,
     ) -> PyResult<Option<Py<PyAny>>> {
         let message = {
             let mut state = self.inbound.state.lock().unwrap();
@@ -1511,7 +1571,8 @@ impl WebSocketExchange {
             }
             Some(Message::Binary(bytes)) => {
                 event.set_item("type", "websocket.receive")?;
-                event.set_item("bytes", pyo3::types::PyBytes::new(py, &bytes))?;
+                event
+                    .set_item("bytes", pyo3::types::PyBytes::new(py, &bytes))?;
             }
             Some(Message::Close { code, reason }) => {
                 event.set_item("type", "websocket.disconnect")?;
@@ -1532,12 +1593,12 @@ impl WebSocketExchange {
         &self,
         py: Python<'py>,
         text: Option<String>,
-        bytes: Option<Vec<u8>>
+        bytes: Option<Vec<u8>>,
     ) -> PyResult<Option<Bound<'py, PyAny>>> {
         let message = match (text, bytes) {
             (Some(text), _) => Message::Text(text),
             (None, Some(bytes)) => Message::Binary(bytes),
-            (None, None) => return Ok(None)
+            (None, None) => return Ok(None),
         };
         let Some(outbound) = self.outbound.lock().unwrap().clone() else {
             return Ok(None);
@@ -1560,13 +1621,15 @@ impl WebSocketExchange {
         &self,
         py: Python<'py>,
         code: u16,
-        reason: String
+        reason: String,
     ) -> PyResult<Option<Bound<'py, PyAny>>> {
         if let Some(decision) = self.decision.lock().unwrap().take() {
             let _ = decision.send(WebSocketDecision::Reject);
             return Ok(None);
         }
-        let Some(outbound) = self.outbound.lock().unwrap().take() else { return Ok(None) };
+        let Some(outbound) = self.outbound.lock().unwrap().take() else {
+            return Ok(None);
+        };
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let _ = outbound.send(Message::Close { code, reason }).await;
             Ok(())
@@ -1578,7 +1641,7 @@ impl WebSocketExchange {
     /// the connection with 1011 by ending the outbound direction.
     fn fail(
         &self,
-        message: String
+        message: String,
     ) {
         tracing::debug!("🐍 WebSocket application failed: {message}");
         self.finish();
@@ -1603,7 +1666,7 @@ fn run_application(
     definition: PythonApplication,
     commands: Commands,
     doorbell: Doorbell,
-    startup: mpsc::SyncSender<std::result::Result<(), String>>
+    startup: mpsc::SyncSender<std::result::Result<(), String>>,
 ) -> Result<()> {
     Python::attach(|py| {
         configure_python(py, &definition)?;
@@ -1615,18 +1678,20 @@ fn run_application(
             #[cfg(feature = "broadcast")]
             definition.broadcast,
             #[cfg(feature = "django")]
-            definition.channels.map(|layer| (layer, commands.clone()))
+            definition.channels.map(|layer| (layer, commands.clone())),
         )?;
         drop(commands);
 
-        let module =
-            py.import(&definition.target.module).map_err(|error| python_error(py, error))?;
+        let module = py
+            .import(&definition.target.module)
+            .map_err(|error| python_error(py, error))?;
         let mut application = module
             .getattr(definition.target.attribute.split('.').next().unwrap())
             .map_err(|error| python_error(py, error))?;
         for attribute in definition.target.attribute.split('.').skip(1) {
-            application =
-                application.getattr(attribute).map_err(|error| python_error(py, error))?;
+            application = application
+                .getattr(attribute)
+                .map_err(|error| python_error(py, error))?;
         }
         if !application.is_callable() {
             return Err(Error::Python(format!(
@@ -1637,10 +1702,14 @@ fn run_application(
 
         let control = Py::new(
             py,
-            LifespanControl { startup: Mutex::new(Some(startup)), doorbell: Mutex::new(doorbell) }
+            LifespanControl {
+                startup: Mutex::new(Some(startup)),
+                doorbell: Mutex::new(doorbell),
+            },
         )
         .map_err(|error| python_error(py, error))?;
-        let code = CString::new(APPLICATION_DRIVER).expect("application driver has no NUL bytes");
+        let code = CString::new(APPLICATION_DRIVER)
+            .expect("application driver has no NUL bytes");
         let filename = CString::new("<claviron-asgi>").unwrap();
         let name = CString::new("_claviron_asgi_lifespan").unwrap();
         let driver = PyModule::from_code(py, &code, &filename, &name)
@@ -1658,7 +1727,7 @@ fn run_application(
 
 #[pyclass]
 struct PythonInvocationBridge {
-    router: Arc<InvocationRouter>
+    router: Arc<InvocationRouter>,
 }
 
 #[pymethods]
@@ -1667,11 +1736,15 @@ impl PythonInvocationBridge {
         &self,
         py: Python<'py>,
         operation: String,
-        payload: &Bound<'py, PyAny>
+        payload: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let payload = py.import("json")?.call_method1("dumps", (payload,))?.extract::<String>()?;
-        let payload = serde_json::from_str(&payload)
-            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+        let payload = py
+            .import("json")?
+            .call_method1("dumps", (payload,))?
+            .extract::<String>()?;
+        let payload = serde_json::from_str(&payload).map_err(|error| {
+            pyo3::exceptions::PyValueError::new_err(error.to_string())
+        })?;
         let router = Arc::clone(&self.router);
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -1679,8 +1752,10 @@ impl PythonInvocationBridge {
                 .invoke(&operation, payload)
                 .await
                 .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
-            let response = serde_json::to_string(&response)
-                .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
+            let response =
+                serde_json::to_string(&response).map_err(|error| {
+                    pyo3::exceptions::PyRuntimeError::new_err(error.to_string())
+                })?;
             Python::attach(|py| {
                 py.import("json")
                     .and_then(|json| json.call_method1("loads", (response,)))
@@ -1702,8 +1777,13 @@ fn install_claviron_module(
     py: Python<'_>,
     router: Option<Arc<InvocationRouter>>,
     counters: Option<Arc<claviron::orbit::Counter>>,
-    #[cfg(feature = "broadcast")] broadcast: Option<crate::broadcast::Publisher>,
-    #[cfg(feature = "django")] channels: Option<(crate::django::channels::ChannelLayer, Commands)>
+    #[cfg(feature = "broadcast")] broadcast: Option<
+        crate::broadcast::Publisher,
+    >,
+    #[cfg(feature = "django")] channels: Option<(
+        crate::django::channels::ChannelLayer,
+        Commands,
+    )>,
 ) -> Result<()> {
     #[allow(unused_mut)]
     let mut nothing = router.is_none() && counters.is_none();
@@ -1721,20 +1801,32 @@ fn install_claviron_module(
     if nothing {
         return Ok(());
     }
-    let module = PyModule::new(py, "claviron").map_err(|error| python_error(py, error))?;
+    let module = PyModule::new(py, "claviron")
+        .map_err(|error| python_error(py, error))?;
     if let Some(router) = router {
         let bridge = Py::new(py, PythonInvocationBridge { router })
             .map_err(|error| python_error(py, error))?;
-        let invoke = bridge.bind(py).getattr("invoke").map_err(|error| python_error(py, error))?;
-        module.add("invoke", invoke).map_err(|error| python_error(py, error))?;
-        module.add("_bridge", bridge).map_err(|error| python_error(py, error))?;
+        let invoke = bridge
+            .bind(py)
+            .getattr("invoke")
+            .map_err(|error| python_error(py, error))?;
+        module
+            .add("invoke", invoke)
+            .map_err(|error| python_error(py, error))?;
+        module
+            .add("_bridge", bridge)
+            .map_err(|error| python_error(py, error))?;
     }
     if let Some(table) = counters {
         let counters = Py::new(py, crate::counter::Counters::new(table))
             .map_err(|error| python_error(py, error))?;
-        let counter =
-            counters.bind(py).getattr("counter").map_err(|error| python_error(py, error))?;
-        module.add("counter", counter).map_err(|error| python_error(py, error))?;
+        let counter = counters
+            .bind(py)
+            .getattr("counter")
+            .map_err(|error| python_error(py, error))?;
+        module
+            .add("counter", counter)
+            .map_err(|error| python_error(py, error))?;
         module
             .add_class::<crate::counter::PythonCounter>()
             .map_err(|error| python_error(py, error))?;
@@ -1742,17 +1834,21 @@ fn install_claviron_module(
 
     #[cfg(feature = "broadcast")]
     if let Some(publisher) = broadcast {
-        let broadcast = Py::new(py, crate::broadcast::PythonBroadcast::new(publisher))
+        let broadcast =
+            Py::new(py, crate::broadcast::PythonBroadcast::new(publisher))
+                .map_err(|error| python_error(py, error))?;
+        module
+            .add("broadcast", broadcast)
             .map_err(|error| python_error(py, error))?;
-        module.add("broadcast", broadcast).map_err(|error| python_error(py, error))?;
     }
 
     let modules = py
         .import("sys")
         .and_then(|sys| sys.getattr("modules"))
         .map_err(|error| python_error(py, error))?;
-    let modules =
-        modules.cast_into::<PyDict>().map_err(|error| Error::Python(error.to_string()))?;
+    let modules = modules
+        .cast_into::<PyDict>()
+        .map_err(|error| Error::Python(error.to_string()))?;
     PyDictMethods::set_item(&modules, "claviron", &module)
         .map_err(|error| python_error(py, error))?;
 
@@ -1762,20 +1858,24 @@ fn install_claviron_module(
     {
         let functions = [
             pyo3::wrap_pyfunction!(crate::log::log_channel, &module),
-            pyo3::wrap_pyfunction!(crate::log::log, &module)
+            pyo3::wrap_pyfunction!(crate::log::log, &module),
         ];
         for function in functions {
             let function = function.map_err(|error| python_error(py, error))?;
-            module.add_function(function).map_err(|error| python_error(py, error))?;
+            module
+                .add_function(function)
+                .map_err(|error| python_error(py, error))?;
         }
-        let code =
-            CString::new(crate::log::MODULE_SOURCE).expect("log handler source has no NUL bytes");
+        let code = CString::new(crate::log::MODULE_SOURCE)
+            .expect("log handler source has no NUL bytes");
         let filename = CString::new("<claviron-log>").unwrap();
         let name = CString::new("claviron._log").unwrap();
         let handler = PyModule::from_code(py, &code, &filename, &name)
             .and_then(|source| source.getattr("LogHandler"))
             .map_err(|error| python_error(py, error))?;
-        module.add("LogHandler", handler).map_err(|error| python_error(py, error))?;
+        module
+            .add("LogHandler", handler)
+            .map_err(|error| python_error(py, error))?;
     }
 
     // `claviron.channels`, importable by the dotted path Django settings name.
@@ -1785,21 +1885,28 @@ fn install_claviron_module(
     if let Some((layer, commands)) = channels {
         use crate::django::channels::{ChannelCore, MODULE_SOURCE};
 
-        let ring: crate::django::channels::Ring =
-            Arc::new(move |id| drop(commands.send(ApplicationCommand::Ready(id))));
+        let ring: crate::django::channels::Ring = Arc::new(move |id| {
+            drop(commands.send(ApplicationCommand::Ready(id)))
+        });
         let core = ChannelCore::new(
             layer,
             ring,
-            Arc::new(|| EXCHANGE_IDS.fetch_add(1, Ordering::Relaxed))
+            Arc::new(|| EXCHANGE_IDS.fetch_add(1, Ordering::Relaxed)),
         );
-        let core = Py::new(py, core).map_err(|error| python_error(py, error))?;
-        module.add("_channels", core).map_err(|error| python_error(py, error))?;
-        let code = CString::new(MODULE_SOURCE).expect("channel layer source has no NUL bytes");
+        let core =
+            Py::new(py, core).map_err(|error| python_error(py, error))?;
+        module
+            .add("_channels", core)
+            .map_err(|error| python_error(py, error))?;
+        let code = CString::new(MODULE_SOURCE)
+            .expect("channel layer source has no NUL bytes");
         let filename = CString::new("<claviron-channels>").unwrap();
         let name = CString::new("claviron.channels").unwrap();
         let channels = PyModule::from_code(py, &code, &filename, &name)
             .map_err(|error| python_error(py, error))?;
-        module.add("channels", &channels).map_err(|error| python_error(py, error))?;
+        module
+            .add("channels", &channels)
+            .map_err(|error| python_error(py, error))?;
         PyDictMethods::set_item(&modules, "claviron.channels", channels)
             .map_err(|error| python_error(py, error))?;
     }
@@ -1834,8 +1941,8 @@ fn initialize_interpreter(virtual_environment: Option<&Path>) -> Result<()> {
         Python::initialize();
         return Ok(());
     };
-    let executable =
-        CString::new(path_text(&executable)?).map_err(|error| Error::Python(error.to_string()))?;
+    let executable = CString::new(path_text(&executable)?)
+        .map_err(|error| Error::Python(error.to_string()))?;
 
     // SAFETY: the config is initialised before use and cleared on every path;
     // the interpreter is started at most once, before any other Python call,
@@ -1858,16 +1965,20 @@ fn initialize_interpreter(virtual_environment: Option<&Path>) -> Result<()> {
         let status = pyo3::ffi::PyConfig_SetBytesString(
             config_ptr,
             &raw mut (*config_ptr).executable,
-            executable.as_ptr()
+            executable.as_ptr(),
         );
         if pyo3::ffi::PyStatus_Exception(status) != 0 {
             pyo3::ffi::PyConfig_Clear(&mut config);
-            return Err(Error::Python("could not set the interpreter's executable".to_owned()));
+            return Err(Error::Python(
+                "could not set the interpreter's executable".to_owned(),
+            ));
         }
         let status = pyo3::ffi::Py_InitializeFromConfig(&config);
         pyo3::ffi::PyConfig_Clear(&mut config);
         if pyo3::ffi::PyStatus_Exception(status) != 0 {
-            return Err(Error::Python("the interpreter failed to start".to_owned()));
+            return Err(Error::Python(
+                "the interpreter failed to start".to_owned(),
+            ));
         }
         pyo3::ffi::PyEval_SaveThread();
     }
@@ -1876,18 +1987,24 @@ fn initialize_interpreter(virtual_environment: Option<&Path>) -> Result<()> {
 
 fn configure_python(
     py: Python<'_>,
-    definition: &PythonApplication
+    definition: &PythonApplication,
 ) -> Result<()> {
     let sys = py.import("sys").map_err(|error| python_error(py, error))?;
-    let sys_path = sys.getattr("path").map_err(|error| python_error(py, error))?;
     let sys_path =
-        sys_path.cast_into::<PyList>().map_err(|error| Error::Python(error.to_string()))?;
+        sys.getattr("path").map_err(|error| python_error(py, error))?;
+    let sys_path = sys_path
+        .cast_into::<PyList>()
+        .map_err(|error| Error::Python(error.to_string()))?;
     for path in definition.module_paths.iter().rev() {
-        sys_path.insert(0, path_text(path)?).map_err(|error| python_error(py, error))?;
+        sys_path
+            .insert(0, path_text(path)?)
+            .map_err(|error| python_error(py, error))?;
     }
 
     if let Some(virtual_environment) = &definition.virtual_environment {
-        let version = sys.getattr("version_info").map_err(|error| python_error(py, error))?;
+        let version = sys
+            .getattr("version_info")
+            .map_err(|error| python_error(py, error))?;
         let major: u8 = version
             .getattr("major")
             .and_then(|value| value.extract())
@@ -1929,23 +2046,31 @@ fn configure_python(
             .collect::<std::result::Result<_, _>>()
             .map_err(|error| python_error(py, error))?;
         for index in (before..sys_path.len()).rev() {
-            sys_path.del_item(index).map_err(|error| python_error(py, error))?;
+            sys_path
+                .del_item(index)
+                .map_err(|error| python_error(py, error))?;
         }
         for (offset, entry) in added.into_iter().enumerate() {
-            sys_path.insert(offset, entry).map_err(|error| python_error(py, error))?;
+            sys_path
+                .insert(offset, entry)
+                .map_err(|error| python_error(py, error))?;
         }
     }
     Ok(())
 }
 
 fn path_text(path: &Path) -> Result<&str> {
-    path.to_str()
-        .ok_or_else(|| Error::Python(format!("Python path is not valid UTF-8: {}", path.display())))
+    path.to_str().ok_or_else(|| {
+        Error::Python(format!(
+            "Python path is not valid UTF-8: {}",
+            path.display()
+        ))
+    })
 }
 
 fn python_error(
     py: Python<'_>,
-    error: PyErr
+    error: PyErr,
 ) -> Error {
     let rendered = py
         .import("traceback")

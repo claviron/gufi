@@ -72,10 +72,10 @@ type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 #[cfg(feature = "axum")]
 pub fn register_router<F>(
     state: &AppState,
-    router: F
+    router: F,
 ) -> registry::Result<()>
 where
-    F: FnOnce(AppState) -> claviron::axum::Router
+    F: FnOnce(AppState) -> claviron::axum::Router,
 {
     claviron::runner::register_router(state, |state| {
         let router = router(state);
@@ -98,7 +98,7 @@ where
 /// it earlier is a bug and says so rather than inventing a response.
 #[derive(Clone)]
 pub struct PythonService {
-    handle: Arc<OnceLock<PythonApplicationHandle>>
+    handle: Arc<OnceLock<PythonApplicationHandle>>,
 }
 
 impl PythonService {
@@ -118,11 +118,11 @@ impl PythonService {
     /// a closure can reach the interpreter without importing a trait.
     pub async fn handle<B>(
         &self,
-        request: Request<B>
+        request: Request<B>,
     ) -> AppResponse
     where
         B: http_body::Body<Data = Bytes> + Send + 'static,
-        B::Error: std::fmt::Display
+        B::Error: std::fmt::Display,
     {
         let handle = self
             .handle
@@ -136,7 +136,7 @@ impl PythonService {
 impl<B> Service<Request<B>> for PythonService
 where
     B: http_body::Body<Data = Bytes> + Send + 'static,
-    B::Error: std::fmt::Display
+    B::Error: std::fmt::Display,
 {
     type Response = AppResponse;
     type Error = Infallible;
@@ -144,20 +144,22 @@ where
 
     fn poll_ready(
         &mut self,
-        _: &mut Context<'_>
+        _: &mut Context<'_>,
     ) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 
     fn call(
         &mut self,
-        request: Request<B>
+        request: Request<B>,
     ) -> Self::Future {
         let handle = Arc::clone(&self.handle);
         Box::pin(async move {
             let handle = handle
                 .get()
-                .expect("the Python application boots before any ingress is bound")
+                .expect(
+                    "the Python application boots before any ingress is bound",
+                )
                 .clone();
             Ok(dispatch(handle, request).await)
         })
@@ -166,11 +168,11 @@ where
 
 async fn dispatch<B>(
     handle: PythonApplicationHandle,
-    request: Request<B>
+    request: Request<B>,
 ) -> AppResponse
 where
     B: http_body::Body<Data = Bytes> + Send + 'static,
-    B::Error: std::fmt::Display
+    B::Error: std::fmt::Display,
 {
     let (parts, body) = request.into_parts();
     let body = body.map_err(|error| BoxError::from(error.to_string()));
@@ -180,12 +182,14 @@ where
         Ok(response) => response_from_asgi(
             response.status,
             response.headers,
-            response.body.map_err(BoxError::from).boxed_unsync()
+            response.body.map_err(BoxError::from).boxed_unsync(),
         )
         .unwrap_or_else(|message| {
             text_response(StatusCode::INTERNAL_SERVER_ERROR, message.to_owned())
         }),
-        Err(error) => text_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+        Err(error) => {
+            text_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+        }
     }
 }
 
@@ -206,31 +210,37 @@ pub(crate) fn scope(parts: &http::request::Parts) -> HttpRequest {
         method: parts.method.as_str().to_owned(),
         scheme,
         http_version: http_version(parts.version).to_owned(),
-        path: percent_decode_str(parts.uri.path()).decode_utf8_lossy().into_owned(),
+        path: percent_decode_str(parts.uri.path())
+            .decode_utf8_lossy()
+            .into_owned(),
         raw_path: parts.uri.path().as_bytes().to_vec(),
         query_string: parts.uri.query().unwrap_or_default().as_bytes().to_vec(),
         headers: parts
             .headers
             .iter()
-            .map(|(name, value)| (name.as_str().as_bytes().to_vec(), value.as_bytes().to_vec()))
+            .map(|(name, value)| {
+                (name.as_str().as_bytes().to_vec(), value.as_bytes().to_vec())
+            })
             .collect(),
         client: origin.client,
-        server: origin.server
+        server: origin.server,
     }
 }
 
 fn response_from_asgi(
     status: u16,
     headers: Vec<(Vec<u8>, Vec<u8>)>,
-    body: ResponseBody
+    body: ResponseBody,
 ) -> Result<AppResponse, &'static str> {
-    let status = StatusCode::from_u16(status).map_err(|_| "invalid ASGI response status")?;
+    let status = StatusCode::from_u16(status)
+        .map_err(|_| "invalid ASGI response status")?;
     let mut response = Response::new(body);
     *response.status_mut() = status;
     for (name, value) in headers {
-        let (Ok(name), Ok(value)) =
-            (http::HeaderName::from_bytes(&name), http::HeaderValue::from_bytes(&value))
-        else {
+        let (Ok(name), Ok(value)) = (
+            http::HeaderName::from_bytes(&name),
+            http::HeaderValue::from_bytes(&value),
+        ) else {
             return Err("invalid ASGI response header");
         };
         response.headers_mut().append(name, value);
@@ -240,7 +250,7 @@ fn response_from_asgi(
 
 pub(crate) fn text_response(
     status: StatusCode,
-    message: String
+    message: String,
 ) -> AppResponse {
     let mut response = Response::new(full_body(message));
     *response.status_mut() = status;
@@ -254,6 +264,6 @@ pub(crate) fn http_version(version: http::Version) -> &'static str {
         http::Version::HTTP_11 => "1.1",
         http::Version::HTTP_2 => "2",
         http::Version::HTTP_3 => "3",
-        _ => "1.1"
+        _ => "1.1",
     }
 }

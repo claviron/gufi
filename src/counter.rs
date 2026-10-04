@@ -25,13 +25,13 @@ use pyo3::prelude::*;
 #[pyclass(name = "Counter", module = "claviron", frozen)]
 pub(crate) struct PythonCounter {
     table: Arc<Counter>,
-    key: String
+    key: String,
 }
 
 impl PythonCounter {
     pub(crate) fn new(
         table: Arc<Counter>,
-        key: String
+        key: String,
     ) -> Self {
         Self { table, key }
     }
@@ -53,7 +53,7 @@ impl PythonCounter {
     #[pyo3(signature = (by = 1))]
     fn increment(
         &self,
-        by: i64
+        by: i64,
     ) -> PyResult<i64> {
         self.table.increment(&self.key, by).map_err(error)
     }
@@ -62,7 +62,7 @@ impl PythonCounter {
     #[pyo3(signature = (by = 1))]
     fn decrement(
         &self,
-        by: i64
+        by: i64,
     ) -> PyResult<i64> {
         self.table.decrement(&self.key, by).map_err(error)
     }
@@ -74,8 +74,10 @@ impl PythonCounter {
 
     fn __repr__(&self) -> String {
         match self.table.get(&self.key) {
-            Ok(Some(value)) => format!("claviron.counter({:?}) = {value}", self.key),
-            _ => format!("claviron.counter({:?})", self.key)
+            Ok(Some(value)) => {
+                format!("claviron.counter({:?}) = {value}", self.key)
+            }
+            _ => format!("claviron.counter({:?})", self.key),
         }
     }
 }
@@ -85,17 +87,17 @@ impl PythonCounter {
 fn error(error: claviron::orbit::counter::Error) -> PyErr {
     use claviron::orbit::counter::Error;
     match error {
-        Error::KeyEmpty | Error::KeyTooLarge { .. } | Error::NegativeAmount(_) => {
-            PyValueError::new_err(error.to_string())
-        }
-        _ => PyRuntimeError::new_err(error.to_string())
+        Error::KeyEmpty
+        | Error::KeyTooLarge { .. }
+        | Error::NegativeAmount(_) => PyValueError::new_err(error.to_string()),
+        _ => PyRuntimeError::new_err(error.to_string()),
     }
 }
 
 /// What `claviron.counter` is bound to: the table, handing out keys.
 #[pyclass(frozen)]
 pub(crate) struct Counters {
-    table: Arc<Counter>
+    table: Arc<Counter>,
 }
 
 impl Counters {
@@ -110,7 +112,7 @@ impl Counters {
     /// not at its first use.
     fn counter(
         &self,
-        key: String
+        key: String,
     ) -> PyResult<PythonCounter> {
         self.table.get(&key).map_err(error)?;
         Ok(PythonCounter::new(Arc::clone(&self.table), key))

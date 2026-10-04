@@ -20,12 +20,14 @@ pub enum Error {
     CurrentDirectory(#[source] std::io::Error),
     #[error("application working directory has no name")]
     MissingApplicationName,
-    #[error("watch rolls the workers over one at a time: set workers to 2 or more")]
+    #[error(
+        "watch rolls the workers over one at a time: set workers to 2 or more"
+    )]
     WatchWithoutWorkers,
     #[error(transparent)]
     Claviron(#[from] claviron::Error),
     #[error("registration failed: {0}")]
-    Registry(String)
+    Registry(String),
 }
 
 /// Standalone Python application runner with a local HTTP development ingress.
@@ -37,12 +39,16 @@ pub enum Error {
 pub struct Runner {
     target: String,
     launch: Launch,
-    config_path: Option<PathBuf>
+    config_path: Option<PathBuf>,
 }
 
 impl Runner {
     pub fn new(target: impl Into<String>) -> Self {
-        Self { target: target.into(), launch: Launch::default(), config_path: None }
+        Self {
+            target: target.into(),
+            launch: Launch::default(),
+            config_path: None,
+        }
     }
 
     /// What this application is called.
@@ -54,7 +60,7 @@ impl Runner {
     /// match, and a directory rename would silently break that.
     pub fn name(
         mut self,
-        name: impl Into<String>
+        name: impl Into<String>,
     ) -> Self {
         self.launch.runner.name = Some(name.into());
         self
@@ -64,7 +70,7 @@ impl Runner {
     /// application.
     pub fn config_path(
         mut self,
-        path: impl Into<PathBuf>
+        path: impl Into<PathBuf>,
     ) -> Self {
         self.config_path = Some(path.into());
         self
@@ -72,7 +78,7 @@ impl Runner {
 
     pub fn application_root(
         mut self,
-        path: impl Into<PathBuf>
+        path: impl Into<PathBuf>,
     ) -> Self {
         self.launch.own.root = Some(path.into());
         self
@@ -80,7 +86,7 @@ impl Runner {
 
     pub fn virtual_environment(
         mut self,
-        path: impl Into<PathBuf>
+        path: impl Into<PathBuf>,
     ) -> Self {
         self.launch.own.venv = Some(path.into());
         self
@@ -91,7 +97,7 @@ impl Runner {
     /// name is the whole of the address.
     pub fn orbit(
         mut self,
-        orbit: bool
+        orbit: bool,
     ) -> Self {
         self.launch.runner.orbit = orbit;
         self
@@ -101,11 +107,11 @@ impl Runner {
     /// process may hold a lane in the fleet and a Unix socket at once.
     pub fn listen(
         mut self,
-        bind: Bind
+        bind: Bind,
     ) -> Self {
         match bind {
             Bind::Tcp(address) => self.launch.runner.tcp = Some(address),
-            Bind::Uds(path) => self.launch.runner.uds = Some(path)
+            Bind::Uds(path) => self.launch.runner.uds = Some(path),
         }
         self
     }
@@ -115,7 +121,7 @@ impl Runner {
     /// operator's permission.
     pub fn trusted(
         mut self,
-        networks: impl IntoIterator<Item = Network>
+        networks: impl IntoIterator<Item = Network>,
     ) -> Self {
         self.launch.runner.trusted.extend(networks);
         self
@@ -126,7 +132,7 @@ impl Runner {
     #[cfg(feature = "tls")]
     pub fn tls(
         mut self,
-        tls: crate::Tls
+        tls: crate::Tls,
     ) -> Self {
         self.launch.runner.tls_cert = Some(tls.certificate);
         self.launch.runner.tls_key = Some(tls.key);
@@ -137,7 +143,7 @@ impl Runner {
     /// Which HTTP versions the sockets accept. Both, unless told otherwise.
     pub fn protocols(
         mut self,
-        protocols: Protocols
+        protocols: Protocols,
     ) -> Self {
         self.launch.runner.h1 = protocols.h1;
         self.launch.runner.h2 = protocols.h2;
@@ -150,7 +156,7 @@ impl Runner {
     /// scales — and serves no traffic itself.
     pub fn workers(
         mut self,
-        workers: u8
+        workers: u8,
     ) -> Self {
         self.launch.runner.workers = Some(workers);
         self
@@ -161,7 +167,7 @@ impl Runner {
     /// command line and still pin something itself.
     pub fn with_options(
         mut self,
-        options: crate::GufiOptions
+        options: crate::GufiOptions,
     ) -> Self {
         if let Some(path) = options.config.clone() {
             self.config_path = Some(path);
@@ -172,7 +178,8 @@ impl Runner {
         self.launch.own.venv = given.own.venv.or(self.launch.own.venv);
         #[cfg(feature = "broadcast")]
         {
-            self.launch.own.broadcasting = given.own.broadcasting.or(self.launch.own.broadcasting);
+            self.launch.own.broadcasting =
+                given.own.broadcasting.or(self.launch.own.broadcasting);
         }
         self
     }
@@ -186,29 +193,35 @@ impl Runner {
     /// is this crate's owner among them.
     pub async fn run<F>(
         self,
-        configure: F
+        configure: F,
     ) -> Result<()>
     where
-        F: FnOnce(&AppState) -> registry::Result<()> + Send + 'static
+        F: FnOnce(&AppState) -> registry::Result<()> + Send + 'static,
     {
         let mut launch = self.launch;
         let root = match launch.own.root.clone() {
             Some(path) => path,
-            None => std::env::current_dir().map_err(Error::CurrentDirectory)?
+            None => std::env::current_dir().map_err(Error::CurrentDirectory)?,
         };
         // The program's own name, not the directory it was started in: an
         // address must not depend on where someone was standing.
         let name = match launch.runner.name.clone() {
             Some(name) => name,
-            None => crate::options::default_name(&root).ok_or(Error::MissingApplicationName)?
+            None => crate::options::default_name(&root)
+                .ok_or(Error::MissingApplicationName)?,
         };
-        launch.own.venv = Some(launch.own.venv.clone().unwrap_or_else(|| root.join(".venv")));
+        launch.own.venv =
+            Some(launch.own.venv.clone().unwrap_or_else(|| root.join(".venv")));
         launch.own.root = Some(root.clone());
         // A process with no door would boot an interpreter nothing can reach.
         // The first thing a Python developer runs has no arguments, so that
         // case is a local listener rather than an error.
-        if launch.runner.tcp.is_none() && launch.runner.uds.is_none() && !launch.runner.orbit {
-            launch.runner.tcp = Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000));
+        if launch.runner.tcp.is_none()
+            && launch.runner.uds.is_none()
+            && !launch.runner.orbit
+        {
+            launch.runner.tcp =
+                Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000));
         }
         // An interpreter is not reloaded in place: a change rolls the workers
         // over, so there have to be workers to roll.
@@ -219,8 +232,10 @@ impl Runner {
         let prepared = launch.prepare(name).map_err(Error::Registry)?;
 
         // Named once here so the master can say where the launch came from.
-        let configuration =
-            self.config_path.clone().unwrap_or_else(|| root.join(crate::CONFIG_FILE));
+        let configuration = self
+            .config_path
+            .clone()
+            .unwrap_or_else(|| root.join(crate::CONFIG_FILE));
         let configuration = configuration.is_file().then_some(configuration);
         let target = self.target;
 

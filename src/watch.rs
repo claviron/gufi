@@ -34,15 +34,15 @@ const PYTHON: Source = Source {
         "storage",
         "public",
         "node_modules",
-        ".git"
+        ".git",
     ],
-    defaults: &[]
+    defaults: &[],
 };
 
 /// The master's watch: a change asks the supervisor for a rolling restart.
 pub(crate) fn watcher(
     root: PathBuf,
-    paths: Vec<PathBuf>
+    paths: Vec<PathBuf>,
 ) -> SourceWatcher {
     let restart: Reaction = Arc::new(|state| {
         let asked = claviron::supervisor::WorkerManager::new(&state)
