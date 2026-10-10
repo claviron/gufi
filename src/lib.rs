@@ -32,6 +32,9 @@ pub mod websocket;
 /// end up with a second one.
 #[cfg(feature = "axum")]
 pub use claviron::axum;
+/// Application-owned routes built from the registered shared provider.
+#[cfg(feature = "axum")]
+pub use claviron::http::routing::Routable;
 /// Which proxies' forwarding headers count; Claviron's, re-exported.
 pub use claviron::http::trust;
 pub use claviron::http::trust::Trust;

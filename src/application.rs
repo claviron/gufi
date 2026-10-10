@@ -12,9 +12,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use async_trait::async_trait;
 use claviron::app::invoke::InvocationRouter;
 use claviron::orbit::CounterProvider;
-use claviron::runtime::{
-    AppState, Finalizable, Provider, ProviderOrder, registry,
-};
+use claviron::runtime::{AppState, Bootable, Component, Finalizable, registry};
 
 use crate::asgi::{
     PythonApplication, PythonApplicationHandle, RunningPythonApplication,
@@ -61,25 +59,54 @@ impl PythonApplicationService {
 }
 
 #[async_trait]
-impl Provider<AppState> for PythonApplicationService {
+impl Component<AppState> for PythonApplicationService {
+    // Masters remain interpreter-free without requiring application handles.
+    #[cfg(not(feature = "broadcast"))]
+    type Deps = (Option<Arc<InvocationRouter>>, Option<Arc<CounterProvider>>);
+    #[cfg(feature = "broadcast")]
+    type Deps = (
+        Option<Arc<InvocationRouter>>,
+        Option<Arc<CounterProvider>>,
+        Option<Arc<claviron::broadcast::BroadcastService>>,
+    );
+
     fn name(&self) -> &'static str {
         "PythonApplicationService"
     }
 
-    /// `boot()` resolves the invocation router, so it has to exist by then.
-    /// Stated as an edge rather than left to a priority: a priority only
-    /// breaks ties between providers that are already free of edges, so a
-    /// missing one does not look like a mistake anywhere — it compiles, and
-    /// the first sign is this boot failing on state that had not been
-    /// published yet.
-    fn order(&self) -> ProviderOrder {
-        ProviderOrder::new()
-            .after::<InvocationRouter>()
-            .after::<CounterProvider>()
+    fn as_bootable(&self) -> Option<&dyn Bootable<AppState, Self::Deps>> {
+        Some(self)
     }
 
+    fn as_finalizable(&self) -> Option<&dyn Finalizable<AppState>> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl Finalizable<AppState> for PythonApplicationService {
+    async fn finalize(
+        &self,
+        _state: &AppState,
+    ) -> registry::Result<()> {
+        let running =
+            self.running.lock().expect("python application lock").take();
+        match running {
+            Some(running) => running
+                .shutdown()
+                .map_err(|error| registry::Error::msg(error.to_string())),
+            None => Ok(()),
+        }
+    }
+}
+
+#[async_trait]
+impl Bootable<AppState, <Self as Component<AppState>>::Deps>
+    for PythonApplicationService
+{
     async fn boot(
         &self,
+        deps: <Self as Component<AppState>>::Deps,
         state: &AppState,
     ) -> registry::Result<()> {
         // A master with workers serves no traffic, and an interpreter it never
@@ -89,29 +116,25 @@ impl Provider<AppState> for PythonApplicationService {
             return Ok(());
         }
 
-        let invocations =
-            state.registry_ref().resolve::<InvocationRouter>().ok_or_else(
-                || registry::Error::msg("InvocationRouter is not registered"),
-            )?;
+        #[cfg(not(feature = "broadcast"))]
+        let (invocations, counters) = deps;
+        #[cfg(feature = "broadcast")]
+        let (invocations, counters, broadcast) = deps;
+        let invocations = invocations.ok_or_else(|| {
+            registry::Error::msg("InvocationRouter is not registered")
+        })?;
 
         let mut application = PythonApplication::new(self.target.clone())
             .map_err(|error| registry::Error::msg(error.to_string()))?
             .module_path(&self.application_root)
             .virtual_environment(&self.virtual_environment)
             .invocations(invocations);
-        if let Some(table) = state
-            .registry_ref()
-            .resolve::<CounterProvider>()
-            .and_then(|provider| provider.handle())
-        {
+        if let Some(table) = counters.and_then(|provider| provider.handle()) {
             application = application.counters(table);
         }
 
         #[cfg(feature = "broadcast")]
-        if let Some(service) = state
-            .registry_ref()
-            .resolve::<claviron::broadcast::BroadcastService>(
-        ) {
+        if let Some(service) = broadcast {
             if let Some(default_application) =
                 self.broadcasting.application.clone()
             {
@@ -135,26 +158,5 @@ impl Provider<AppState> for PythonApplicationService {
         let _ = self.handle.set(running.handle());
         *self.running.lock().expect("python application lock") = Some(running);
         Ok(())
-    }
-
-    fn as_finalizable(&self) -> Option<&dyn Finalizable<AppState>> {
-        Some(self)
-    }
-}
-
-#[async_trait]
-impl Finalizable<AppState> for PythonApplicationService {
-    async fn finalize(
-        &self,
-        _state: &AppState,
-    ) -> registry::Result<()> {
-        let running =
-            self.running.lock().expect("python application lock").take();
-        match running {
-            Some(running) => running
-                .shutdown()
-                .map_err(|error| registry::Error::msg(error.to_string())),
-            None => Ok(()),
-        }
     }
 }

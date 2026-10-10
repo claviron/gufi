@@ -92,6 +92,13 @@ The `axum` feature exists because naming `axum::Router` in a signature means
 this crate and the application must resolve the same axum. `gufi::axum`
 re-exports Claviron's, so they cannot end up with two.
 
+The same surface exposes `gufi::Routable`, Claviron HTTP's host-independent
+route capability. `routes(self: Arc<Self>, &AppState)` receives the registered
+shared provider instance, allowing handlers to capture it directly. Registration
+still passes an Arc; no provider-data clone or per-request registry lookup is
+required. The contribution remains `Option<Router<AppState>>`, merged by the
+shared runner shell rather than by a Gufi-specific registry.
+
 ## One name, and it is an address
 
 `application_name` is the only name there is. The instance lock is held under
@@ -101,11 +108,13 @@ have to match. It defaults to the working directory's name, which is
 convenient and is also why a starter kit states it: a directory rename would
 move an address.
 
-There is no fleet name to state beside it. Two fleets exist and neither is a
-question for the application:
+The process-family fleet can be selected separately with `fleet_name` (or
+`--fleet-name`). If omitted, a valid application name is used; names exceeding
+the fleet primitive's length limit require an explicit fleet name. Two distinct
+namespaces exist:
 
 - This process's own, holding its workers and its metrics, named after the
-  application. Never Claviron's `clv` — shared memory outlives the process
+  application unless explicitly selected. Never implicitly Claviron's `clv` — shared memory outlives the process
   that made it, and defaulting into an edge's fleet would map segments
   belonging to a server this process knows nothing about.
 - The shared one, where the transport's tables live. It is the same on every

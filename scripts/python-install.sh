@@ -42,7 +42,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   exit 2
 fi
 
-PYTHON_VERSION="${PYTHON_VERSION:-3.13.13}"
+PYTHON_VERSION="${PYTHON_VERSION:-3.14.8}"
 PYTHON_MINOR="${PYTHON_VERSION%.*}"
 SRC_ROOT="${SRC_ROOT:-$HOME/src}"
 PYTHON_SRC_DIR="${PYTHON_SRC_DIR:-$SRC_ROOT/Python-$PYTHON_VERSION}"
@@ -227,7 +227,7 @@ print("OK:", sys.version.split()[0],
 '
   if [[ "$STATIC" != "1" ]]; then
     # The interpreter must load this prefix's library, not the system's.
-    ldd "$python" | grep -q "$PYTHON_DIR/lib/libpython" ||
+    ldd "$python" | grep -F "$PYTHON_DIR/lib/libpython" >/dev/null ||
       die "$python does not load $PYTHON_DIR/lib/libpython$PYTHON_MINOR.so"
   fi
   print_usage

@@ -245,7 +245,7 @@ impl Runner {
             // The instance lock and this process's own fleet, both under the
             // application's own name — never Claviron's `clv`.
             .name(prepared.name.clone())
-            .fleet_name(prepared.name)
+            .fleet_name(prepared.fleet_name)
             .config_dir(&root)
             .register(move |state| {
                 // A worker serves what its master resolved, and reads it
@@ -271,7 +271,7 @@ impl Runner {
                 // workers are what it restarts, so they do not watch.
                 #[cfg(feature = "watch")]
                 if state.is_master() && runner.watch {
-                    state.registry_ref().insert(Arc::new(crate::watch::watcher(
+                    state.registry_ref().register(Arc::new(crate::watch::watcher(
                         root.clone(),
                         runner.watch_paths.clone()
                     )))?;
@@ -302,7 +302,7 @@ impl Runner {
                 #[cfg(feature = "websocket")]
                 let owner = owner.upgrades(upgrades);
                 claviron::runner::register_owner(state, owner)?;
-                state.registry_ref().insert(application)?;
+                state.registry_ref().register(application)?;
                 launch::register_routing(state, runner, &root)?;
                 // The fleet's keyed counters: `claviron.counter(key)` in
                 // Python, `CounterProvider` in Rust.
