@@ -229,6 +229,8 @@ impl Runner {
         if launch.runner.watch && launch.runner.workers.unwrap_or(0) < 2 {
             return Err(Error::WatchWithoutWorkers);
         }
+        let production = launch.runner.production;
+        let environment = launch.runner.environment.clone();
         let prepared = launch.prepare(name).map_err(Error::Registry)?;
 
         // Named once here so the master can say where the launch came from.
@@ -239,7 +241,14 @@ impl Runner {
         let configuration = configuration.is_file().then_some(configuration);
         let target = self.target;
 
-        Server::new()
+        // Production only by `--production`; otherwise `--environment`, and
+        // without either, `local`.
+        let server = match (production, environment) {
+            (true, _) => Server::new().production(),
+            (false, Some(environment)) => Server::new().environment(environment),
+            (false, None) => Server::new(),
+        };
+        server
             .workers(prepared.workers)
             .launch(prepared.envelope)
             // The instance lock and this process's own fleet, both under the
