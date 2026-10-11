@@ -1,4 +1,4 @@
-//! The Python application as a provider Claviron boots.
+//! The Python application component Claviron prepares and finalizes.
 //!
 //! The interpreter comes up in `boot()`, before any runnable is spawned, so an
 //! ingress cannot be reached before the application behind it is ready. It goes
@@ -7,24 +7,24 @@
 //! shutdown waits for work rather than interrupting it.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use async_trait::async_trait;
+use claviron::app::ApplicationManager;
 use claviron::app::invoke::InvocationRouter;
 use claviron::orbit::CounterProvider;
 use claviron::runtime::{AppState, Bootable, Component, Finalizable, registry};
 
-use crate::asgi::{
-    PythonApplication, PythonApplicationHandle, RunningPythonApplication,
-};
+use crate::asgi::{PythonApplication, PythonApplicationHandle};
+use crate::management::PythonApplicationController;
 use crate::routing::PythonService;
 
 pub(crate) struct PythonApplicationService {
     target: String,
     application_root: PathBuf,
     virtual_environment: PathBuf,
-    handle: Arc<OnceLock<PythonApplicationHandle>>,
-    running: Mutex<Option<RunningPythonApplication>>,
+    handle: Arc<RwLock<Option<PythonApplicationHandle>>>,
+    controller: Mutex<Option<Arc<PythonApplicationController>>>,
     /// The launch's `broadcasting:` block: the application
     /// `claviron.broadcast` publishes to by default, and Channels' layer.
     #[cfg(feature = "broadcast")]
@@ -43,16 +43,16 @@ impl PythonApplicationService {
             target: target.into(),
             application_root,
             virtual_environment,
-            handle: Arc::new(OnceLock::new()),
-            running: Mutex::new(None),
+            handle: Arc::new(RwLock::new(None)),
+            controller: Mutex::new(None),
             #[cfg(feature = "broadcast")]
             broadcasting,
         }
     }
 
     /// The application as a service, for an application to compose behind its
-    /// own routes. The handle inside is empty until `boot()` fills it, and no
-    /// ingress runs before that.
+    /// own routes. The handle follows the managed generation. No ingress runs
+    /// before boot, and a later application stop leaves the ingress alive.
     pub(crate) fn service(&self) -> PythonService {
         PythonService::new(Arc::clone(&self.handle))
     }
@@ -62,9 +62,14 @@ impl PythonApplicationService {
 impl Component<AppState> for PythonApplicationService {
     // Masters remain interpreter-free without requiring application handles.
     #[cfg(not(feature = "broadcast"))]
-    type Deps = (Option<Arc<InvocationRouter>>, Option<Arc<CounterProvider>>);
+    type Deps = (
+        Arc<ApplicationManager>,
+        Option<Arc<InvocationRouter>>,
+        Option<Arc<CounterProvider>>,
+    );
     #[cfg(feature = "broadcast")]
     type Deps = (
+        Arc<ApplicationManager>,
         Option<Arc<InvocationRouter>>,
         Option<Arc<CounterProvider>>,
         Option<Arc<claviron::broadcast::BroadcastService>>,
@@ -89,11 +94,12 @@ impl Finalizable<AppState> for PythonApplicationService {
         &self,
         _state: &AppState,
     ) -> registry::Result<()> {
-        let running =
-            self.running.lock().expect("python application lock").take();
-        match running {
-            Some(running) => running
-                .shutdown()
+        let controller =
+            self.controller.lock().expect("python controller lock").take();
+        match controller {
+            Some(controller) => controller
+                .stop_application()
+                .await
                 .map_err(|error| registry::Error::msg(error.to_string())),
             None => Ok(()),
         }
@@ -117,9 +123,9 @@ impl Bootable<AppState, <Self as Component<AppState>>::Deps>
         }
 
         #[cfg(not(feature = "broadcast"))]
-        let (invocations, counters) = deps;
+        let (manager, invocations, counters) = deps;
         #[cfg(feature = "broadcast")]
-        let (invocations, counters, broadcast) = deps;
+        let (manager, invocations, counters, broadcast) = deps;
         let invocations = invocations.ok_or_else(|| {
             registry::Error::msg("InvocationRouter is not registered")
         })?;
@@ -152,11 +158,22 @@ impl Bootable<AppState, <Self as Component<AppState>>::Deps>
             }
         }
 
-        let running = application
-            .boot()
+        let controller = Arc::new(
+            PythonApplicationController::new(
+                application,
+                Arc::clone(&self.handle),
+                state,
+            )
+            .map_err(|error| registry::Error::msg(error.to_string()))?,
+        );
+        manager
+            .add(controller.clone())
             .map_err(|error| registry::Error::msg(error.to_string()))?;
-        let _ = self.handle.set(running.handle());
-        *self.running.lock().expect("python application lock") = Some(running);
-        Ok(())
+        *self.controller.lock().expect("python controller lock") =
+            Some(controller.clone());
+        controller
+            .start_application()
+            .await
+            .map_err(|error| registry::Error::msg(error.to_string()))
     }
 }

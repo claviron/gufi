@@ -6,7 +6,7 @@
 //! other: the ASGI application's. The edge speaks the protocol and whole
 //! messages cross the slot.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, RwLock};
 
 use claviron::orbit::transport::{
     Endpoint, Message, read_message, write_message,
@@ -29,9 +29,10 @@ pub(crate) async fn session(
     request: AppRequest,
     endpoint: Endpoint,
     handshake: Handshake,
-    python: Arc<OnceLock<PythonApplicationHandle>>,
+    python: Arc<RwLock<Option<PythonApplicationHandle>>>,
 ) {
-    let Some(handle) = python.get().cloned() else {
+    let handle = python.read().expect("python handle lock").clone();
+    let Some(handle) = handle else {
         handshake.answer(503, Vec::new());
         return;
     };

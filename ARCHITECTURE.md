@@ -38,12 +38,16 @@ providers into it, and Claviron's standalone bootstrap does the rest: instance
 lock, service manager, Orbit fleet, signal handlers, dependency-ordered boot,
 validation, runnable generations, drain, finalize.
 
+The launch's supervisor policy is registered through `Server::with_definitions`,
+before core components bind their configuration sources. Registering it only
+in the application callback is too late for supervisor configuration.
+
 Three providers take part, and an application's own sit beside them with no
 special status:
 
 | provider | what it does |
 |---|---|
-| `PythonApplicationService` | `boot()` brings the interpreter up and drives ASGI lifespan startup; `finalize()` takes it down. Declares `ProviderOrder::after::<InvocationRouter>()`, because its boot resolves that router. |
+| `PythonApplicationService` | `boot()` prepares the native Python application and adds its controller to `ApplicationManager`, then awaits ASGI startup. `Deps` declares the manager and optional runtime capabilities. Masters stay interpreter-free. `finalize()` drains the current application generation. |
 | `Application` | holds the service the application registered. No lifecycle of its own — a registry entry, not a stage. |
 | `DevIngress` **or** `OrbitIngress` | `Runnable`, and exactly one of them: `RunMode` decides which is registered. One binds a listener, the other binds nothing and takes a lane in its application's fleet. Both serve until their generation is cancelled, then finish what they accepted. |
 
@@ -52,15 +56,49 @@ before any runnable is spawned, and it goes down after they have drained. A
 request cannot reach an application that is not ready, and shutdown waits for
 work rather than interrupting it.
 
+### Link application management
+
+Orbit launches use the runner shell's common Link command bridge and connection
+observations (`LinkJoined`, `EdgeConnected`, `EdgeDisconnected`,
+`EdgeShutdownInitiated`). Gufi does not implement another Link transport or
+connectivity watcher. The same gRPC Link management surface addresses PHP and
+Python applications by fleet, Link name and runtime-qualified application id.
+
+Gufi's `PythonApplicationController` owns only Python execution: one prepared
+ASGI definition, its current loop thread, lifecycle, generation and error.
+Start awaits lifespan startup; stop removes admission, drains accepted HTTP
+and WebSocket work and awaits lifespan shutdown; restart serializes stop/start.
+Native boot and join run on a blocking executor, not a Tokio reactor. The
+controller retains the event bus and shutdown signal, never the owning registry.
+There is no synthetic PHP-style pool status for the ASGI loop.
+
+The runner, Rust routes and Link lane stay alive while Python is stopped.
+Python HTTP/WebSocket dispatch returns 503 until a started generation publishes
+its handle. Lifecycle events are emitted after actual transitions, not when a
+command is merely accepted. No drain deadline or forced socket closure is
+invented: existing work, including open WebSockets, must finish.
+
+Restart re-runs ASGI lifespan on the process's existing CPython interpreter;
+it does not finalize CPython or evict imported modules. Source-code refresh
+remains the native watcher's existing rolling worker restart. These operations
+are deliberately different, just as PHP source renewal remains PHP-owned.
+
 ## What an application registers
 
 A `tower_service::Service`, which is deliberately not a server.
 
 ```rust
 pub fn configure(state: &AppState) -> registry::Result<()> {
-    gufi::register_router(state, routes::router)
+    // Register application services and event listeners here.
+    Ok(())
 }
 ```
+
+`Runner::with_interceptor(routes::rust_interceptor)` builds the Rust router
+after these registrations. The shared runner puts HTTP `Routable` contributions
+behind it, then Python as the path and method fallback. With no interceptor,
+registered routables still intercept Python. The low-level `register_router`
+entry point remains available for custom compositions.
 
 The development listener calls that service with a request it read off a
 socket. An Orbit ingress will call the same service with a request it read out
@@ -144,6 +182,11 @@ loop. `boot()` does not return until `lifespan.startup.complete` is observed.
 Shutdown stops admission, waits for submitted exchanges, sends
 `lifespan.shutdown`, and waits without an implicit deadline for the application
 task to return.
+
+Shutdown orders the command queue against new HTTP/WebSocket submissions, so
+a previously cloned handle cannot enqueue work after the stop marker. Body
+and message wakeups stay active until accepted work drains; repeated shutdown
+does not insert a second marker into that drain.
 
 **The module the application imports** is `claviron`, installed into the
 interpreter at boot:

@@ -10,6 +10,9 @@ use claviron::runtime::{AppState, registry};
 use crate::application::PythonApplicationService;
 use crate::options::Launch;
 
+#[cfg(feature = "axum")]
+type Interceptor = Box<dyn FnOnce(&AppState) -> registry::Result<()> + Send>;
+
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]
@@ -40,6 +43,8 @@ pub struct Runner {
     target: String,
     launch: Launch,
     config_path: Option<PathBuf>,
+    #[cfg(feature = "axum")]
+    interceptor: Option<Interceptor>,
 }
 
 impl Runner {
@@ -48,6 +53,8 @@ impl Runner {
             target: target.into(),
             launch: Launch::default(),
             config_path: None,
+            #[cfg(feature = "axum")]
+            interceptor: None,
         }
     }
 
@@ -184,6 +191,23 @@ impl Runner {
         self
     }
 
+    /// Rust handles its declared routes before HTTP Routable contributions
+    /// and Python. Built after `configure`, so application registrations are
+    /// available. Calling this again replaces the selected interceptor.
+    #[cfg(feature = "axum")]
+    pub fn with_interceptor<F>(
+        mut self,
+        router: F,
+    ) -> Self
+    where
+        F: FnOnce(AppState) -> claviron::axum::Router + Send + 'static,
+    {
+        self.interceptor = Some(Box::new(move |state| {
+            crate::routing::register_router(state, router)
+        }));
+        self
+    }
+
     /// Boot the application and serve it.
     ///
     /// The lifecycle is Claviron's, not a sequence written here: providers
@@ -198,6 +222,8 @@ impl Runner {
     where
         F: FnOnce(&AppState) -> registry::Result<()> + Send + 'static,
     {
+        #[cfg(feature = "axum")]
+        let interceptor = self.interceptor;
         let mut launch = self.launch;
         let root = match launch.own.root.clone() {
             Some(path) => path,
@@ -232,6 +258,7 @@ impl Runner {
         let production = launch.runner.production;
         let environment = launch.runner.environment.clone();
         let prepared = launch.prepare(name).map_err(Error::Registry)?;
+        let definitions = launch.clone();
 
         // Named once here so the master can say where the launch came from.
         let configuration = self
@@ -245,7 +272,9 @@ impl Runner {
         // without either, `local`.
         let server = match (production, environment) {
             (true, _) => Server::new().production(),
-            (false, Some(environment)) => Server::new().environment(environment),
+            (false, Some(environment)) => {
+                Server::new().environment(environment)
+            }
             (false, None) => Server::new(),
         };
         server
@@ -256,6 +285,13 @@ impl Runner {
             .name(prepared.name.clone())
             .fleet_name(prepared.fleet_name)
             .config_dir(&root)
+            .with_definitions(move |state| {
+                let definitions = definitions.inherited(state)?;
+                claviron::runner::supervisor::register_policy(
+                    state,
+                    definitions.runner.supervisor.clone().unwrap_or_default(),
+                )
+            })
             .register(move |state| {
                 // A worker serves what its master resolved, and reads it
                 // before anything is registered from it: the interpreter's
@@ -267,12 +303,6 @@ impl Runner {
                     tracing::info!("📄 launch read from {}", path.display());
                 }
                 let runner = &launch.runner;
-                // Before the application's own registrations: the supervisor
-                // boots early and must find it there.
-                claviron::runner::supervisor::register_policy(
-                    state,
-                    runner.supervisor.clone().unwrap_or_default()
-                )?;
                 let root = launch.own.root.clone().unwrap_or_default();
                 let venv = launch.own.venv.clone().unwrap_or_else(|| root.join(".venv"));
 
@@ -320,6 +350,10 @@ impl Runner {
                 // Then the application's own registrations, which may compose
                 // the interpreter behind their routes.
                 configure(state)?;
+                #[cfg(feature = "axum")]
+                if let Some(interceptor) = interceptor {
+                    interceptor(state)?;
+                }
                 claviron::runner::ensure_application(state)?;
                 launch::register_trust(state, runner)?;
                 launch::register_doors(state, runner, crate::orbit::ASGI_RUNTIME, None)

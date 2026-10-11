@@ -9,7 +9,7 @@
 use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
@@ -40,11 +40,13 @@ impl Deliver for WebSocketInbound {
 /// WebSocket goes to the application, anything else is not one this serves.
 #[derive(Clone)]
 pub(crate) struct Upgrades {
-    python: Arc<OnceLock<PythonApplicationHandle>>,
+    python: Arc<RwLock<Option<PythonApplicationHandle>>>,
 }
 
 impl Upgrades {
-    pub(crate) fn new(python: Arc<OnceLock<PythonApplicationHandle>>) -> Self {
+    pub(crate) fn new(
+        python: Arc<RwLock<Option<PythonApplicationHandle>>>
+    ) -> Self {
         Self { python }
     }
 }
@@ -66,7 +68,7 @@ impl tower_service::Service<AppRequest> for Upgrades {
         &mut self,
         request: AppRequest,
     ) -> Self::Future {
-        let python = self.python.get().cloned();
+        let python = self.python.read().expect("python handle lock").clone();
         Box::pin(async move {
             if !is_websocket(&request) {
                 return Ok(status(StatusCode::NOT_IMPLEMENTED));

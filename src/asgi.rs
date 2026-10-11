@@ -263,15 +263,18 @@ async def drive(application, control):
             requests.add(request)
             request.add_done_callback(requests.discard)
         if last and not finished.done():
-            loop.remove_reader(doorbell)
             finished.set_result(None)
 
     loop.add_reader(doorbell, answer)
     answer()
     await finished
 
-    if requests:
-        await asyncio.gather(*requests, return_exceptions=True)
+    # Stop admission, but keep serving body/message wakeups for accepted work.
+    try:
+        if requests:
+            await asyncio.gather(*requests, return_exceptions=True)
+    finally:
+        loop.remove_reader(doorbell)
 
     # An application that never spoke the protocol has nothing to be told the
     # process is ending, and the scope it refused is already over.
@@ -593,6 +596,10 @@ pub struct RunningPythonApplication {
 }
 
 impl RunningPythonApplication {
+    pub(crate) fn is_finished(&self) -> bool {
+        self.handle.as_ref().is_none_or(JoinHandle::is_finished)
+    }
+
     pub fn handle(&self) -> PythonApplicationHandle {
         PythonApplicationHandle { commands: self.commands.clone() }
     }
@@ -710,6 +717,7 @@ struct Commands {
     queue: mpsc::Sender<ApplicationCommand>,
     bell: Arc<UnixStream>,
     armed: Arc<AtomicBool>,
+    accepting: Arc<Mutex<bool>>,
 }
 
 impl Commands {
@@ -717,7 +725,28 @@ impl Commands {
         &self,
         command: ApplicationCommand,
     ) -> std::result::Result<(), mpsc::SendError<ApplicationCommand>> {
+        // Submission and Shutdown share the queue-ordering lock. A handle
+        // cloned before stop cannot enqueue new work behind Shutdown. Ready
+        // notifications still reach requests already draining.
+        let mut accepting =
+            self.accepting.lock().expect("python admission lock");
+        match &command {
+            ApplicationCommand::Http { .. }
+            | ApplicationCommand::WebSocket { .. }
+                if !*accepting =>
+            {
+                return Err(mpsc::SendError(command));
+            }
+            ApplicationCommand::Shutdown => {
+                if !*accepting {
+                    return Ok(());
+                }
+                *accepting = false;
+            }
+            _ => {}
+        }
         self.queue.send(command)?;
+        drop(accepting);
         if !self.armed.swap(true, Ordering::AcqRel) {
             // Full means a byte is already waiting to be read; either way the
             // loop wakes.
@@ -744,7 +773,12 @@ fn commands() -> Result<(Commands, Doorbell)> {
     }
     let armed = Arc::new(AtomicBool::new(false));
     Ok((
-        Commands { queue, bell: Arc::new(write), armed: Arc::clone(&armed) },
+        Commands {
+            queue,
+            bell: Arc::new(write),
+            armed: Arc::clone(&armed),
+            accepting: Arc::new(Mutex::new(true)),
+        },
         Doorbell { queue: receiver, bell: read, armed },
     ))
 }

@@ -36,6 +36,7 @@ thiserror = { version = "2.0" }
 tower-service = { version = "0.3" }
 tracing = { version = "0.1" }
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 
 # axum is the default road, the way it is in Claviron: `register` puts the
 # interpreter behind your router for you, and the router type comes from

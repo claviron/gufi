@@ -30,6 +30,49 @@ fn lifespan_is_started_and_shutdown() {
 }
 
 #[tokio::test]
+async fn shutdown_closes_admission_but_keeps_drain_notifications() {
+    let (commands, doorbell) = commands().unwrap();
+    let handle = PythonApplicationHandle { commands: commands.clone() };
+    commands.send(ApplicationCommand::Shutdown).unwrap();
+    let request = || HttpRequest {
+        method: "GET".to_owned(),
+        scheme: "http".to_owned(),
+        http_version: "1.1".to_owned(),
+        path: "/".to_owned(),
+        raw_path: b"/".to_vec(),
+        query_string: Vec::new(),
+        headers: Vec::new(),
+        client: None,
+        server: None,
+    };
+    assert!(matches!(
+        handle.handle_websocket(request()),
+        Err(Error::ApplicationStopped)
+    ));
+    assert!(matches!(
+        handle
+            .handle_http(request(), http_body_util::Full::new(Bytes::new()))
+            .await,
+        Err(Error::ApplicationStopped)
+    ));
+    commands.send(ApplicationCommand::Ready(7)).unwrap();
+    // Drop/shutdown may repeat; it must not interpose another stop in drain.
+    commands.send(ApplicationCommand::Shutdown).unwrap();
+    assert!(matches!(
+        doorbell.queue.try_recv(),
+        Ok(ApplicationCommand::Shutdown)
+    ));
+    assert!(matches!(
+        doorbell.queue.try_recv(),
+        Ok(ApplicationCommand::Ready(7))
+    ));
+    assert!(matches!(
+        doorbell.queue.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test]
 async fn http_request_is_dispatched_on_the_application_loop() {
     let directory = tempfile::tempdir().unwrap();
     fs::write(

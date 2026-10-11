@@ -18,6 +18,7 @@ mod counter;
 mod django;
 #[cfg(feature = "log")]
 mod log;
+mod management;
 pub(crate) mod options;
 mod orbit;
 mod python;

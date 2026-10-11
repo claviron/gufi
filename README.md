@@ -47,14 +47,19 @@ use gufi::Runner;
 
 #[tokio::main]
 async fn main() -> gufi::Result<()> {
-    Runner::new("main:app").application_name("checkout").run(app::configure).await
+    Runner::new("main:app")
+        .name("checkout")
+        .with_interceptor(app::routes::router)
+        .run(app::configure)
+        .await
 }
 ```
 
 ```rust
 // src/app.rs
 pub fn configure(state: &AppState) -> registry::Result<()> {
-    gufi::register_router(state, routes::router)
+    // Register your application services and event listeners here.
+    Ok(())
 }
 ```
 
@@ -93,7 +98,10 @@ Nothing there mentions a fallback, and nothing should: **the Python
 application is the fallback.** A path your routes do not declare, and a
 declared path reached with an undeclared method, both reach the interpreter.
 Your application stays the authority on what exists; the Rust routes only
-intercept. `register_router` wires that for you.
+intercept. `with_interceptor` wires that after `configure`; registered HTTP
+`Routable` services stand between that router and Python. Without an explicit
+interceptor, those routables still run. `register_router` remains available
+for custom registration callbacks.
 
 If you want to place the interpreter yourself — your own 404 for a subtree, or
 a framework whose fallthrough lives somewhere else — use `register_router_with`, which
@@ -159,6 +167,20 @@ socket. That is the shape every Python deployment already has — nginx in front
 of gunicorn, Apache's `WSGIDaemonProcess`. What differs is the cost of the hop,
 not the topology. See `ARCHITECTURE.md`, including why the interpreter is not
 inside the edge instead.
+
+## Orbit Link management
+
+With `orbit: true`, the shared runner exposes the ASGI application to the
+existing Link management API, including gRPC through an edge. The target is
+runtime `asgi` and the configured application name; fleet and Link address
+select the runner, not another Python environment.
+
+Start/stop/restart drive ASGI lifespan. The runner and Link lane remain alive
+when Python is stopped, and Python requests return 503. Accepted requests and
+WebSockets drain under their existing ownership; no extra timeout is added.
+Restart does not reload imported source or reinitialize CPython: source changes
+still use rolling worker replacement. Link connection events and command
+dispatch are shared infrastructure; Python execution stays Gufi-owned.
 
 ## The name
 

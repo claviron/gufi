@@ -13,7 +13,7 @@
 use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
@@ -94,21 +94,25 @@ where
 ///
 /// It is generic over the request body, so it fits a framework's fallback slot
 /// without this crate knowing that framework. The handle inside is filled when
-/// the interpreter boots, which happens before any runnable is spawned; calling
-/// it earlier is a bug and says so rather than inventing a response.
+/// the interpreter boots, which happens before any runnable is spawned. It
+/// follows the current application generation; a stopped application returns 503.
 #[derive(Clone)]
 pub struct PythonService {
-    handle: Arc<OnceLock<PythonApplicationHandle>>,
+    handle: Arc<RwLock<Option<PythonApplicationHandle>>>,
 }
 
 impl PythonService {
     /// The interpreter's handle as it will be once booted, for a stage that
     /// reaches Python outside the HTTP exchange — a WebSocket.
-    pub(crate) fn handle_cell(&self) -> Arc<OnceLock<PythonApplicationHandle>> {
+    pub(crate) fn handle_cell(
+        &self
+    ) -> Arc<RwLock<Option<PythonApplicationHandle>>> {
         Arc::clone(&self.handle)
     }
 
-    pub(crate) fn new(handle: Arc<OnceLock<PythonApplicationHandle>>) -> Self {
+    pub(crate) fn new(
+        handle: Arc<RwLock<Option<PythonApplicationHandle>>>
+    ) -> Self {
         Self { handle }
     }
 
@@ -124,11 +128,7 @@ impl PythonService {
         B: http_body::Body<Data = Bytes> + Send + 'static,
         B::Error: std::fmt::Display,
     {
-        let handle = self
-            .handle
-            .get()
-            .expect("the Python application boots before any ingress is bound")
-            .clone();
+        let handle = self.handle.read().expect("python handle lock").clone();
         dispatch(handle, request).await
     }
 }
@@ -153,27 +153,25 @@ where
         &mut self,
         request: Request<B>,
     ) -> Self::Future {
-        let handle = Arc::clone(&self.handle);
-        Box::pin(async move {
-            let handle = handle
-                .get()
-                .expect(
-                    "the Python application boots before any ingress is bound",
-                )
-                .clone();
-            Ok(dispatch(handle, request).await)
-        })
+        let handle = self.handle.read().expect("python handle lock").clone();
+        Box::pin(async move { Ok(dispatch(handle, request).await) })
     }
 }
 
 async fn dispatch<B>(
-    handle: PythonApplicationHandle,
+    handle: Option<PythonApplicationHandle>,
     request: Request<B>,
 ) -> AppResponse
 where
     B: http_body::Body<Data = Bytes> + Send + 'static,
     B::Error: std::fmt::Display,
 {
+    let Some(handle) = handle else {
+        return text_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Python application is stopped".to_owned(),
+        );
+    };
     let (parts, body) = request.into_parts();
     let body = body.map_err(|error| BoxError::from(error.to_string()));
     let scope = scope(&parts);
@@ -187,6 +185,10 @@ where
         .unwrap_or_else(|message| {
             text_response(StatusCode::INTERNAL_SERVER_ERROR, message.to_owned())
         }),
+        Err(crate::asgi::Error::ApplicationStopped) => text_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Python application is stopped".to_owned(),
+        ),
         Err(error) => {
             text_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
         }
@@ -267,3 +269,7 @@ pub(crate) fn http_version(version: http::Version) -> &'static str {
         _ => "1.1",
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/routing.rs"]
+mod tests;
