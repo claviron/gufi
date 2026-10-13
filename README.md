@@ -78,6 +78,9 @@ your-app/
 `cargo run`, and the application is served on `127.0.0.1:8000`. `Ctrl-C` stops
 admission, drains what is in flight, runs ASGI lifespan shutdown, and returns.
 
+With the `cli` feature, `GufiOptions::from_args()` accepts `--config-path FILE`
+(alias `--config`, shorthand `-c`) to select the launch YAML file.
+
 ## Your router stays yours
 
 Gufi has no router. Bring axum, warp, tower-http or a bare `service_fn`:

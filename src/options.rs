@@ -45,7 +45,10 @@ pub struct GufiOptions {
     /// Not part of the launch itself — it is where the launch was read
     /// from — so it is neither written into the file nor carried to a
     /// worker, which is handed the resolved launch instead.
-    #[cfg_attr(feature = "cli", arg(short, long))]
+    #[cfg_attr(
+        feature = "cli",
+        arg(short, long = "config-path", visible_alias = "config")
+    )]
     pub config: Option<PathBuf>,
 }
 
@@ -190,7 +193,7 @@ impl GufiOptions {
     /// options stand over what it says.
     ///
     /// A missing file is not an error — an application that was never
-    /// configured runs on its defaults. A named `--config` directory that
+    /// configured runs on its defaults. A named `--config-path` file that
     /// does not exist is one, because it was asked for by name.
     ///
     /// The command line wins wherever it said anything. A flag can open a
