@@ -170,10 +170,22 @@ inside the edge instead.
 
 ## Orbit Link management
 
-The application introduction is Python / Gufi / ASGI. Declare the framework
-with `framework: FastAPI` in `gufi.yaml`, `--framework FastAPI`, or
-`Runner::framework("FastAPI")`; it is never inferred from the application name.
-This management-only metadata is shared by local and linked observations.
+The application introduction is Python / Gufi / ASGI. Declare framework tags
+with `frameworks: [FastAPI]` in `gufi.yaml`, repeatable `--framework`, or
+`Runner::frameworks(["FastAPI"])`. An explicit list is preserved, including `[]`
+to suppress detection. Scalar `framework` and `Runner::framework` remain shorthands. Otherwise, at
+launch preparation Gufi reads `pyproject.toml` under the application root:
+`project.dependencies` and `tool.poetry.dependencies` can identify FastAPI,
+Django, Starlette, Flask, Quart, Sanic, Litestar or Falcon. Multiple distinct
+frameworks remain distinct tags; optional and development dependencies do not count.
+Missing or unrecognized metadata leaves the framework unknown. Unreadable or
+invalid TOML is logged without preventing launch. Detection does not import
+Python, read `requirements.txt`, or change ASGI dispatch. This management-only
+metadata is shared by local and linked observations.
+
+`icon: fastapi`, `--icon fastapi`, or `Runner::icon("fastapi")` selects a symbolic
+admin-client icon. The GUI maps known codes locally; absent/unknown codes retain
+the Python default. This hint never changes dispatch or loads an external asset.
 
 With `orbit: true`, the shared runner exposes the ASGI application to the
 existing Link management API, including gRPC through an edge. The target is

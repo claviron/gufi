@@ -60,10 +60,17 @@ work rather than interrupting it.
 
 The common Application description reports Python runtime, Gufi runner and
 ASGI request mode, independently of the `asgi` control identity or its ingress.
-An optional `framework` in the shared launch/CLI (or `Runner::framework`)
-declares the application's framework; absent remains unknown. Execution stores
-this description once at preparation. Fleet and Link snapshots retain the
-same per-placement data, without changing ASGI request dispatch. WSGI remains
+An optional `frameworks` list in the shared launch/CLI (or `Runner::frameworks`)
+declares informational tags and takes precedence over detection, even when empty.
+Scalar `framework` and `Runner::framework` remain one-label shorthands.
+When absent, launch preparation detects known frameworks from runtime
+dependencies in the application's `pyproject.toml`, retaining all distinct
+recognized names. Missing or unrecognized metadata yields no tags;
+unreadable or malformed metadata emits a warning rather than blocking launch.
+The resolved list and optional `icon` client code are carried in the worker launch, not calculated on requests
+or through Python imports. Execution stores this description once at
+preparation. Fleet and Link snapshots retain the same per-placement data,
+without changing ASGI request dispatch. WSGI remains
 an unimplemented interface, not an alias for request-scoped PHP scripts.
 
 Orbit launches use the runner shell's common Link command bridge and connection

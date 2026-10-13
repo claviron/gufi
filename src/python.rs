@@ -48,12 +48,32 @@ pub struct Runner {
 }
 
 impl Runner {
-    /// Declare the framework once for management; Python dispatch is unchanged.
+    /// Declare the framework once for management, overriding pyproject detection.
+    /// Python dispatch is unchanged.
     pub fn framework(
         mut self,
         framework: impl Into<String>,
     ) -> Self {
-        self.launch.runner.framework = Some(framework.into());
+        self.launch.runner.frameworks = Some(vec![framework.into()]);
+        self
+    }
+
+    /// Declare all informational framework tags; an empty list disables discovery.
+    pub fn frameworks(
+        mut self,
+        frameworks: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.launch.runner.frameworks =
+            Some(frameworks.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Choose an admin-client icon by code, independently of Python dispatch.
+    pub fn icon(
+        mut self,
+        icon: impl Into<String>,
+    ) -> Self {
+        self.launch.runner.icon = Some(icon.into());
         self
     }
 
@@ -238,6 +258,7 @@ impl Runner {
             Some(path) => path,
             None => std::env::current_dir().map_err(Error::CurrentDirectory)?,
         };
+        crate::framework::resolve(&root, &mut launch.runner.frameworks);
         // The program's own name, not the directory it was started in: an
         // address must not depend on where someone was standing.
         let name = match launch.runner.name.clone() {
@@ -333,7 +354,8 @@ impl Runner {
                     target,
                     root.clone(),
                     venv,
-                    runner.framework.clone(),
+                    runner.frameworks.clone().unwrap_or_default(),
+                    runner.icon.clone(),
                     #[cfg(feature = "broadcast")]
                     launch.own.broadcasting.clone().unwrap_or_default()
                 ));

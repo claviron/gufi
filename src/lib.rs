@@ -14,6 +14,7 @@ pub mod asgi;
 #[cfg(feature = "broadcast")]
 mod broadcast;
 mod counter;
+mod framework;
 #[cfg(feature = "django")]
 mod django;
 #[cfg(feature = "log")]

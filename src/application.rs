@@ -37,13 +37,15 @@ impl PythonApplicationService {
         target: impl Into<String>,
         application_root: PathBuf,
         virtual_environment: PathBuf,
-        framework: Option<String>,
+        frameworks: Vec<String>,
+        icon: Option<String>,
         #[cfg(feature = "broadcast")]
         broadcasting: crate::options::Broadcasting,
     ) -> Self {
         Self {
             description: claviron::app::ApplicationDescription {
-                framework,
+                frameworks,
+                icon,
                 ..claviron::app::ApplicationDescription::new("python", "ASGI")
                     .runner("Gufi")
             },
