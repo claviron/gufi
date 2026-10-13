@@ -5,8 +5,6 @@ use std::sync::Arc;
 use claviron::Server;
 use claviron::http::trust::Network;
 use claviron::runner::{Bind, Protocols, launch};
-#[cfg(feature = "bench")]
-use claviron::runtime::Register;
 use claviron::runtime::{AppState, registry};
 
 use crate::application::PythonApplicationService;
@@ -378,7 +376,7 @@ impl Runner {
                 state.registry_ref().register(application)?;
                 launch::register_routing(state, runner, &root)?;
                 #[cfg(feature = "bench")]
-                crate::bench::BenchService::register(state)?;
+                claviron::bench::runner::BenchService::register_with_alias_prefix(state, "/_gufi")?;
                 // The fleet's keyed counters: `claviron.counter(key)` in
                 // Python, `CounterProvider` in Rust.
                 claviron::orbit::register_counter(state)?;

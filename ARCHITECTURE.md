@@ -33,7 +33,8 @@ believe is Claviron's HTTP layer's.
 
 ## Native HTTP benchmarks
 
-With `bench`, the runner registers `bench::BenchService` through the existing
+With `bench`, the runner registers Claviron's shared
+`claviron::bench::runner::BenchService` through the existing
 host-free Routable registry. Its native baselines are available without an
 application interceptor; they do not execute Python or open another listener.
 `/_bench/rust` and `/_bench/stats` are the shared runner benchmark format.
@@ -41,6 +42,10 @@ The original `/_gufi/rust` and `/_gufi/stats` remain aliases. Application
 interceptors take precedence over these contributions; custom raw services may
 compose `bench::routes()` explicitly. Without this feature, no benchmark provider
 or handlers are compiled.
+The feature forwards to `claviron/bench`; this crate retains only registration
+and compatibility URLs, not an independent native workload implementation.
+The shared `/bench/plain`, `/bench/json` and streaming `/bench/echo` endpoints
+are available through the same runner ingress too.
 
 ## The lifecycle is Claviron's
 

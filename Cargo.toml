@@ -73,7 +73,7 @@ websocket = ["claviron/websocket"]
 legacy-linux = ["claviron/legacy-linux"]
 # Two Rust routes to measure your own against. Off by default: routes an
 # application did not write do not belong in production by accident.
-bench = ["axum"]
+bench = ["axum", "claviron/bench"]
 metrics = ["claviron/metrics"]
 # Claviron's broadcast service in this process: Pusher-compatible channels a
 # browser subscribes to with pusher-js or Laravel Echo, reached over Orbit, and
