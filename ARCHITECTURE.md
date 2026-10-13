@@ -58,6 +58,12 @@ The launch's supervisor policy is registered through `Server::with_definitions`,
 before core components bind their configuration sources. Registering it only
 in the application callback is too late for supervisor configuration.
 
+The runner sets `AppState::config_dir()` to the selected launch file's parent
+directory (`.` for a bare filename). Without an explicit path, the file is
+`gufi.yaml` under the application root. Application-owned configuration sources
+use this state value, and workers inherit the same directory. The Python root
+and virtual environment remain independent of the configuration directory.
+
 Three providers take part, and an application's own sit beside them with no
 special status:
 

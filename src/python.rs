@@ -295,6 +295,11 @@ impl Runner {
             .config_path
             .clone()
             .unwrap_or_else(|| root.join(crate::CONFIG_FILE));
+        let config_dir = configuration
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .to_path_buf();
         let configuration = configuration.is_file().then_some(configuration);
         let target = self.target;
 
@@ -314,7 +319,7 @@ impl Runner {
             // application's own name — never Claviron's `clv`.
             .name(prepared.name.clone())
             .fleet_name(prepared.fleet_name)
-            .config_dir(&root)
+            .config_dir(config_dir)
             .with_definitions(move |state| {
                 let definitions = definitions.inherited(state)?;
                 claviron::runner::supervisor::register_policy(
