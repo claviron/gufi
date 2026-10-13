@@ -77,17 +77,7 @@ pub fn register_router<F>(
 where
     F: FnOnce(AppState) -> claviron::axum::Router,
 {
-    claviron::runner::register_router(state, |state| {
-        let router = router(state);
-        #[cfg(feature = "bench")]
-        let router = {
-            tracing::info!(
-                "🐍 gufi bench routes mounted: /_gufi/rust and /_gufi/stats (feature \"bench\")"
-            );
-            router.merge(crate::bench::routes())
-        };
-        router
-    })
+    claviron::runner::register_router(state, router)
 }
 
 /// The Python application, as a service to put behind your own routes.

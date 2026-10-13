@@ -1,6 +1,8 @@
 //! A baseline to measure your own routes against.
 //!
-//! Turn on the `bench` feature and two routes appear beside yours. Neither
+//! Turn on the `bench` feature and `BenchService` contributes two native routes
+//! through the existing Routable registry: `/_bench/rust` and `/_bench/stats`.
+//! The `/_gufi/*` paths below remain aliases. Neither route
 //! touches Python, so the gap between them and your own handler is what the
 //! interpreter costs on your machine, with your application, under your load.
 //!
@@ -87,15 +89,19 @@
 //! Off by default, and it says so at boot when it is on: routes an
 //! application did not write should never be a surprise in a log.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use claviron::Component;
 use claviron::axum::Router;
 use claviron::axum::body::Bytes;
 use claviron::axum::extract::Query;
 use claviron::axum::response::IntoResponse;
 use claviron::axum::routing::get;
+use claviron::http::routing::{Routable, register_routable};
 use claviron::runtime::activity::ACTIVITY;
+use claviron::runtime::{AppState, Register, registry};
 use http::header::{CACHE_CONTROL, CONTENT_TYPE, HeaderName, HeaderValue};
 
 /// What the caller wants this route to do: how long to take, and how much
@@ -184,9 +190,43 @@ fn spread(bound: u64) -> u64 {
     x % bound
 }
 
-/// The routes, for an application that composes its own router.
+/// Native benchmark routes, registered automatically by `Runner` with `bench`.
+/// They use the existing host-free Routable capability, not another listener.
+pub struct BenchService;
+
+impl Component<AppState> for BenchService {
+    type Deps = ();
+
+    fn name(&self) -> &'static str {
+        "BenchService"
+    }
+}
+
+impl Register<AppState> for BenchService {
+    fn register(state: &AppState) -> registry::Result<()> {
+        register_routable(state, Arc::new(Self))?;
+        tracing::info!(
+            "gufi bench routes mounted: /_bench/rust and /_bench/stats (feature \"bench\")"
+        );
+        Ok(())
+    }
+}
+
+impl Routable for BenchService {
+    fn routes(
+        self: Arc<Self>,
+        _state: &AppState,
+    ) -> registry::Result<Option<Router<AppState>>> {
+        Ok(Some(routes().with_state(())))
+    }
+}
+
+/// The routes, for an application that composes its own router. Old Gufi
+/// paths remain aliases; the shared benchmark format uses `/_bench`.
 pub fn routes() -> Router {
     Router::new()
+        .route("/_bench/rust", get(rust).post(rust))
+        .route("/_bench/stats", get(stats))
         .route("/_gufi/rust", get(rust).post(rust))
         .route("/_gufi/stats", get(stats))
 }

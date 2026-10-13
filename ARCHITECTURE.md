@@ -31,6 +31,17 @@ It owns no vhost routing, configuration providers, process supervision, or
 Orbit transport. TLS on its listener is the runner shell's; which proxies to
 believe is Claviron's HTTP layer's.
 
+## Native HTTP benchmarks
+
+With `bench`, the runner registers `bench::BenchService` through the existing
+host-free Routable registry. Its native baselines are available without an
+application interceptor; they do not execute Python or open another listener.
+`/_bench/rust` and `/_bench/stats` are the shared runner benchmark format.
+The original `/_gufi/rust` and `/_gufi/stats` remain aliases. Application
+interceptors take precedence over these contributions; custom raw services may
+compose `bench::routes()` explicitly. Without this feature, no benchmark provider
+or handlers are compiled.
+
 ## The lifecycle is Claviron's
 
 `Runner::run` holds no sequence. It builds a `claviron::Server`, registers
