@@ -20,6 +20,7 @@ use crate::management::PythonApplicationController;
 use crate::routing::PythonService;
 
 pub(crate) struct PythonApplicationService {
+    description: claviron::app::ApplicationDescription,
     target: String,
     application_root: PathBuf,
     virtual_environment: PathBuf,
@@ -36,10 +37,16 @@ impl PythonApplicationService {
         target: impl Into<String>,
         application_root: PathBuf,
         virtual_environment: PathBuf,
+        framework: Option<String>,
         #[cfg(feature = "broadcast")]
         broadcasting: crate::options::Broadcasting,
     ) -> Self {
         Self {
+            description: claviron::app::ApplicationDescription {
+                framework,
+                ..claviron::app::ApplicationDescription::new("python", "ASGI")
+                    .runner("Gufi")
+            },
             target: target.into(),
             application_root,
             virtual_environment,
@@ -162,6 +169,7 @@ impl Bootable<AppState, <Self as Component<AppState>>::Deps>
             PythonApplicationController::new(
                 application,
                 Arc::clone(&self.handle),
+                self.description.clone(),
                 state,
             )
             .map_err(|error| registry::Error::msg(error.to_string()))?,

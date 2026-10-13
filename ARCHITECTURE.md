@@ -58,6 +58,14 @@ work rather than interrupting it.
 
 ### Link application management
 
+The common Application description reports Python runtime, Gufi runner and
+ASGI request mode, independently of the `asgi` control identity or its ingress.
+An optional `framework` in the shared launch/CLI (or `Runner::framework`)
+declares the application's framework; absent remains unknown. Execution stores
+this description once at preparation. Fleet and Link snapshots retain the
+same per-placement data, without changing ASGI request dispatch. WSGI remains
+an unimplemented interface, not an alias for request-scoped PHP scripts.
+
 Orbit launches use the runner shell's common Link command bridge and connection
 observations (`LinkJoined`, `EdgeConnected`, `EdgeDisconnected`,
 `EdgeShutdownInitiated`). Gufi does not implement another Link transport or

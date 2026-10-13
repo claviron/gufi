@@ -48,6 +48,15 @@ pub struct Runner {
 }
 
 impl Runner {
+    /// Declare the framework once for management; Python dispatch is unchanged.
+    pub fn framework(
+        mut self,
+        framework: impl Into<String>,
+    ) -> Self {
+        self.launch.runner.framework = Some(framework.into());
+        self
+    }
+
     pub fn new(target: impl Into<String>) -> Self {
         Self {
             target: target.into(),
@@ -324,6 +333,7 @@ impl Runner {
                     target,
                     root.clone(),
                     venv,
+                    runner.framework.clone(),
                     #[cfg(feature = "broadcast")]
                     launch.own.broadcasting.clone().unwrap_or_default()
                 ));

@@ -26,6 +26,7 @@ pub(crate) struct PythonApplicationController {
 
 struct Execution {
     id: ApplicationId,
+    description: claviron::app::ApplicationDescription,
     application: PythonApplication,
     handle: Arc<RwLock<Option<PythonApplicationHandle>>>,
     current: Mutex<Current>,
@@ -47,6 +48,7 @@ impl PythonApplicationController {
     pub(crate) fn new(
         application: PythonApplication,
         handle: Arc<RwLock<Option<PythonApplicationHandle>>>,
+        description: claviron::app::ApplicationDescription,
         state: &AppState,
     ) -> ApplicationControlResult<Self> {
         let id = ApplicationId::new(
@@ -56,6 +58,7 @@ impl PythonApplicationController {
         Ok(Self {
             execution: Arc::new(Execution {
                 id,
+                description,
                 application,
                 handle,
                 current: Mutex::new(Current {
@@ -122,6 +125,7 @@ impl Execution {
         let current = self.current.lock().expect("python application lock");
         ApplicationSnapshot {
             id: self.id.clone(),
+            description: self.description.clone(),
             lifecycle: current.lifecycle,
             enabled: current.enabled,
             generation: current.generation,

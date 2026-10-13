@@ -170,6 +170,11 @@ inside the edge instead.
 
 ## Orbit Link management
 
+The application introduction is Python / Gufi / ASGI. Declare the framework
+with `framework: FastAPI` in `gufi.yaml`, `--framework FastAPI`, or
+`Runner::framework("FastAPI")`; it is never inferred from the application name.
+This management-only metadata is shared by local and linked observations.
+
 With `orbit: true`, the shared runner exposes the ASGI application to the
 existing Link management API, including gRPC through an edge. The target is
 runtime `asgi` and the configured application name; fleet and Link address
