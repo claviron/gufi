@@ -12,6 +12,27 @@ fn main() {
     println!("cargo:rerun-if-env-changed=PYO3_CONFIG_FILE");
 
     let python = pyo3_build_config::get();
+    assert_eq!(
+        python.implementation(),
+        pyo3_build_config::PythonImplementation::CPython,
+        "Gufi embeds the selected CPython build, not an alternative interpreter"
+    );
+    assert_eq!(
+        python.version(),
+        pyo3_build_config::PythonVersion { major: 3, minor: 15 },
+        "Gufi requires CPython 3.15; select the owned interpreter with PYO3_PYTHON"
+    );
+    assert!(
+        matches!(
+            python.target_abi().kind(),
+            pyo3_build_config::PythonAbiKind::VersionSpecific(_)
+        ),
+        "Gufi uses the selected CPython 3.15 ABI, not a multi-version abi3/abi3t build"
+    );
+    let executable = python.executable().expect(
+        "Gufi requires an explicit interpreter executable; set PYO3_PYTHON or executable in PYO3_CONFIG_FILE",
+    );
+    println!("cargo:rustc-env=GUFI_PYTHON_EXECUTABLE={executable}");
     if python.shared()
         && let Some(directory) = python.lib_dir()
     {

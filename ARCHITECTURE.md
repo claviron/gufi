@@ -27,6 +27,13 @@ Claviron knows nothing about Python. The interpreter, the ASGI engine and PyO3
 all live here, which is why Claviron can be built and tested without a Python
 interpreter present at all.
 
+The supported interpreter is CPython 3.15.x with its version-specific ABI.
+Build preparation checks both the implementation and version and records the
+selected executable. It does not introduce a second interpreter selector in
+Claviron or probe PATH per request. Owned deployment builds and macOS's current
+Homebrew build use the same selection contract; older Python fallback and
+multi-version stable-ABI builds are not part of this runner.
+
 It owns no vhost routing, configuration providers, process supervision, or
 Orbit transport. TLS on its listener is the runner shell's; which proxies to
 believe is Claviron's HTTP layer's.
@@ -220,6 +227,41 @@ Shutdown stops admission, waits for submitted exchanges, sends
 `lifespan.shutdown`, and waits without an implicit deadline for the application
 task to return.
 
+Interpreter initialization is serialized once per process through PyConfig.
+It names the declared 3.15 venv executable, or the build-selected executable
+when no venv is declared, and leaves signals/argv/stdio owned by the host.
+Ambient PYTHONHOME/PYTHONPATH and user site packages cannot select another
+installation. Venv version metadata is checked before initialization; the live
+version and prefix are verified before application import. An existing process
+cannot switch virtual environments. A missing venv executable is an error.
+
+CPython owns site initialization, including PEP 829 startup ordering and .start
+hooks. Lifespan restart does not replay addsitedir or duplicate module paths.
+The shipped driver is `src/asgi/driver.py`, not a Rust string literal; only its
+diagnostic traceback import is lazy. Importing the ASGI target and starting
+lifespan stay eager so readiness does not hide an application import failure.
+
+The Python driver owns the lifespan application in a lifecycle TaskGroup and
+accepted HTTP/WebSocket exchanges in a separate request TaskGroup. Each exchange
+contains its application, scope-construction and failure-reporting errors;
+they never escape as a sibling-cancelling request-group failure. CancelledError
+remains cancellation, not an ordinary application error. Pending receive entries
+are removed when their exchange ends, including failure/cancellation paths.
+
+Startup/shutdown message races use short-lived TaskGroups owning only their
+queue waiter. Python 3.15 TaskGroup.cancel ends a phase and joins its losing
+waiter; it has no authority over requests or the lifespan application. Declining
+lifespan remains supported, while explicit failed protocol messages still fail
+startup/shutdown and join the owned application task before returning.
+
+Normal shutdown never cancels the request group. Its context exits normally
+and joins all accepted exchanges before lifespan shutdown. The doorbell reader
+remains registered through that join so body/message/backpressure work can
+finish; finally cleanup removes it on every exit. An explicit cancellation of
+the driver propagates and joins its owned tasks. No timeout or forced drain is
+introduced, and unrelated application-created tasks are not adopted into these
+groups.
+
 Shutdown orders the command queue against new HTTP/WebSocket submissions, so
 a previously cloned handle cannot enqueue work after the stop marker. Body
 and message wakeups stay active until accepted work drains; repeated shutdown
@@ -304,11 +346,12 @@ socket. What differs is the cost of the hop, not the topology.
 
 Two independent reasons, either of which is enough.
 
-**One interpreter per process.** PyO3 does not support sub-interpreters ("PyO3
-modules do not yet support subinterpreters", PyO3 #576), and CPython's GIL
-means one thread runs Python at a time in one. A worker holding Python would
-hold one `sys.path`, one `os.environ`, one `sys.modules` and one GIL for every
-site on the server: two applications could not have two versions of a library,
+**One interpreter per process.** This runner owns one main interpreter, not
+subinterpreters. A GIL-enabled build runs Python on one attached thread at a
+time; a free-threaded build does not change process-wide environment/module
+ownership. A worker holding Python would share `sys.path`, `os.environ` and
+`sys.modules` across sites: two applications could not have independently
+isolated versions of a library,
 and a C extension that segfaults would take TLS, vhosts, static files, PHP and
 JavaScript down with it.
 

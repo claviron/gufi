@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# The CPython a gufi runner embeds on Linux and FreeBSD.
+# The CPython 3.15 a gufi runner embeds on Linux and FreeBSD.
 #
 # A runner loads libpython as a shared library, and on ELF how that library
 # was built decides how fast every line of Python runs. Debian's
@@ -26,7 +26,8 @@ set -euo pipefail
 #
 # macOS needs none of this: Mach-O's two-level namespace has no interposition
 # cost and thread-locals are reached the same way in a dylib as in a static
-# binary. There the runner already beat uvicorn on the stock uv Python.
+# binary. macOS development currently selects Homebrew CPython 3.15 explicitly;
+# it does not use the ELF-specific build below.
 #
 # Usage:
 #   scripts/python-install.sh              # fetch, build, install, verify
@@ -34,20 +35,19 @@ set -euo pipefail
 #   scripts/python-install.sh dry-run      # show the resolved paths
 #   scripts/python-install.sh verify       # smoke-test the installed interpreter
 #
-#   PYTHON_VERSION=3.13.13 scripts/python-install.sh
+#   PYTHON_VERSION=3.15.0 scripts/python-install.sh
 #   STATIC=1 scripts/python-install.sh     # libpython.a instead, for a runner
 #                                          # linked statically (prod option)
-#if [[ "$(uname -s)" == "Darwin" ]]; then
-#  echo "ERROR: macOS runners use the uv-managed Python as it is; see the header." >&2
-#  exit 2
-#fi
-
 PYTHON_VERSION="${PYTHON_VERSION:-3.15.0}"
+[[ "$PYTHON_VERSION" =~ ^3\.15\.[0-9]+$ ]] || {
+  echo "ERROR: this installer requires a stable CPython 3.15.x release" >&2
+  exit 1
+}
 PYTHON_MINOR="${PYTHON_VERSION%.*}"
 SRC_ROOT="${SRC_ROOT:-$HOME/src}"
 PYTHON_SRC_DIR="${PYTHON_SRC_DIR:-$SRC_ROOT/Python-$PYTHON_VERSION}"
 PYTHON_DIR="${PYTHON_INSTALL_DIR:-/opt/python-$PYTHON_MINOR}"
-INSTALL_WITH_SUDO=1
+INSTALL_WITH_SUDO=0
 STATIC="${STATIC:-0}"
 MAKE_JOBS="${MAKE_JOBS:-}"
 SKIP_APT="${SKIP_APT:-0}"
@@ -77,8 +77,9 @@ DEBIAN_PACKAGES=(
 )
 
 # AlmaLinux 8 is the production host. Its gcc 8 builds PGO and LTO; the
-# decimal module falls back to CPython's bundled libmpdec, which EL8 does
-# not package, and readline stands in for libedit.
+# decimal module explicitly uses CPython's bundled libmpdec, which EL8 does
+# not package; 3.15 no longer supplies an implicit fallback. Readline replaces
+# libedit here.
 ALMALINUX_PACKAGES=(
   gcc
   gcc-c++
@@ -116,6 +117,7 @@ detect_os() {
   case "$(uname -s)" in
     Linux) echo linux ;;
     FreeBSD) echo freebsd ;;
+    Darwin) die "this installer builds ELF Python; select the installed Homebrew CPython 3.15 with PYO3_PYTHON on macOS" ;;
     *) die "unsupported OS: $(uname -s)" ;;
   esac
 }
@@ -228,9 +230,16 @@ build_python() {
     flags="$flags -ftls-model=initial-exec"
   fi
 
-  CFLAGS="$flags" LDFLAGS="$ldflags" ./configure \
+  local decimal=(--with-system-libmpdec)
+  if [[ "$(detect_os)" == "linux" && "$(detect_linux_family)" == "rhel" ]]; then
+    decimal=(--without-system-libmpdec)
+  fi
+
+  CFLAGS="${CFLAGS:-} $flags" LDFLAGS="${LDFLAGS:-} $ldflags" ./configure \
     --prefix="$PYTHON_DIR" \
     "${shared[@]}" \
+    "${decimal[@]}" \
+    --with-frame-pointers \
     --enable-optimizations \
     --with-lto \
     --with-computed-gotos \
@@ -253,6 +262,8 @@ verify_install() {
   "$python" -c '
 import sys, sysconfig
 import ssl, sqlite3, ctypes, decimal, lzma, bz2, zlib, uuid, readline, _struct
+from builtins import frozendict, sentinel
+assert sys.implementation.name == "cpython" and sys.version_info[:2] == (3, 15), "CPython 3.15 required"
 print("OK:", sys.version.split()[0],
       "shared" if sysconfig.get_config_var("Py_ENABLE_SHARED") else "static",
       sysconfig.get_config_var("LIBDIR"))
@@ -284,6 +295,7 @@ To use it, add to your shell rc (~/.zshrc or ~/.bashrc):
   export PYTHON_DIR="$PYTHON_DIR"
   export PATH="\$PYTHON_DIR/bin:\$PATH"
   export UV_PYTHON="\$PYTHON_DIR/bin/python$PYTHON_MINOR"
+  export PYO3_PYTHON="\$PYTHON_DIR/bin/python$PYTHON_MINOR"
 EOF
   cat <<EOF
 
@@ -292,8 +304,15 @@ finds the stdlib through the venv's pyvenv.cfg.
 
 Then, in the application:
 
+  # pyproject.toml: requires-python = ">=3.15,<3.16"
   uv sync                                   # .venv, made from UV_PYTHON
-  PYO3_PYTHON=\$PWD/.venv/bin/python cargo build --release
+  cargo build --release
+
+Keep interpreter selection in one shared build environment (for example Cargo
+[env]), not per-command overrides or each application's venv. Preserve PATH
+and compiler flags across all callers. For native profiling add
+-C force-frame-pointers=yes to that shared Rust flag configuration once,
+preserving existing flags. CPython retains its own frame pointers by default.
 
 A runner built against another Python must be rebuilt: PyO3 links the
 libpython of the interpreter it was built with.
@@ -321,6 +340,7 @@ main() {
     *) die "usage: $0 [install|verify|dry-run|deps]" ;;
   esac
 
+  detect_os >/dev/null
   log "building CPython $PYTHON_VERSION → $PYTHON_DIR"
   prepare_prefix
   install_deps

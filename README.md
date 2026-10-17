@@ -3,6 +3,35 @@
 Python runner for Claviron. You write the binary; your ASGI application runs
 inside it.
 
+## CPython 3.15 only
+
+Gufi embeds an explicitly selected CPython **3.15.x** installation. Older
+interpreters and multi-version abi3/abi3t builds are not supported. The owned
+Python installation supplies libpython and its matching standard library;
+application virtual environments supply application dependencies, not a second
+interpreter. macOS development currently selects Homebrew's Python 3.15.
+Linux/FreeBSD deployments use the owned build from `scripts/python-install.sh`.
+
+Set `PYO3_PYTHON` to that installation's executable in the shared build
+environment once, alongside the existing PHP selection. Do not select a
+different interpreter or change PATH/flags for each application or caller.
+For the current macOS installation the executable is
+`/opt/homebrew/bin/python3.15`; this is a host setting, not a repository path.
+Keep `requires-python = ">=3.15,<3.16"` in each application's pyproject.toml and
+recreate older venvs explicitly through the normal dependency workflow.
+Gufi never upgrades or installs packages at startup.
+
+Missing venv executables, wrong Python versions and attempts to switch a
+running process to another environment fail instead of falling back to the
+system Python. Without a venv, initialization uses the build-selected executable,
+not the Rust runner's location. Ambient Python path/home settings and user-site
+packages cannot replace that selection; application module paths remain explicit.
+CPython processes its venv's `.pth` and new `.start` files once at interpreter
+initialization, not again on each ASGI lifespan restart.
+
+See [Python 3.15 integration](docs/Python-3.15.md) for release-feature decisions,
+profiling, build prerequisites and the verification boundary.
+
 ## Write your own runner
 
 `uvicorn main:app` is a program you hand your application to. It owns the

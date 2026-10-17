@@ -7,7 +7,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread::{self, JoinHandle};
 
 use bytes::Bytes;
@@ -19,296 +19,7 @@ use pyo3::types::{
 };
 use tokio::sync::{mpsc as chunks, oneshot};
 
-const APPLICATION_DRIVER: &str = r#"
-import asyncio
-import sys
-import traceback
-
-
-def _exception_text(error):
-    return "".join(traceback.format_exception(error)).strip()
-
-
-async def _cancel(task):
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-
-
-async def drive_http(application, exchange, state, waiters):
-    response_complete = False
-
-    # The body as the ingress reads it, a part per message; once it is all
-    # read, the next receive waits for the reply to complete or the client to
-    # leave, and then says `http.disconnect`. Waits are resolved by the loop,
-    # as a WebSocket's are.
-    async def receive():
-        event = exchange.try_receive()
-        if event is None:
-            waiter = asyncio.get_running_loop().create_future()
-            waiters[exchange.id] = (exchange, waiter)
-            try:
-                event = await waiter
-            finally:
-                waiters.pop(exchange.id, None)
-        return event
-
-    async def send(message):
-        nonlocal response_complete
-        message_type = message.get("type")
-        if message_type == "http.response.start":
-            headers = [
-                (bytes(name), bytes(value))
-                for name, value in message.get("headers", [])
-            ]
-            exchange.response_start(message["status"], headers)
-            return
-        if message_type == "http.response.body":
-            more_body = bool(message.get("more_body", False))
-            waiting = exchange.response_body(bytes(message.get("body", b"")), more_body)
-            if waiting is not None:
-                await waiting
-            response_complete = not more_body
-            if response_complete:
-                # A receive waiting past the body learns the exchange is over.
-                entry = waiters.get(exchange.id)
-                if entry is not None and not entry[1].done():
-                    event = exchange.try_receive()
-                    if event is not None:
-                        entry[1].set_result(event)
-            return
-        raise RuntimeError(f"unexpected ASGI HTTP message: {message_type!r}")
-
-    scope = {
-        "type": "http",
-        "asgi": {"version": "3.0", "spec_version": "2.5"},
-        "http_version": exchange.http_version,
-        "method": exchange.method,
-        "scheme": exchange.scheme,
-        "path": exchange.path,
-        "raw_path": bytes(exchange.raw_path),
-        "query_string": bytes(exchange.query_string),
-        "root_path": "",
-        "headers": [
-            (bytes(name), bytes(value)) for name, value in exchange.headers
-        ],
-        "client": exchange.client,
-        "server": exchange.server,
-        "state": state.copy(),
-    }
-    try:
-        await application(scope, receive, send)
-        if not response_complete:
-            raise RuntimeError("ASGI application returned before completing the HTTP response")
-    except BaseException as error:
-        exchange.fail(_exception_text(error))
-
-
-async def drive_websocket(application, socket, state, waiters):
-    headers = [(bytes(name), bytes(value)) for name, value in socket.headers]
-    subprotocols = []
-    for name, value in headers:
-        if name.lower() == b"sec-websocket-protocol":
-            subprotocols += [
-                part.strip() for part in value.decode("latin-1").split(",") if part.strip()
-            ]
-    scope = {
-        "type": "websocket",
-        "asgi": {"version": "3.0", "spec_version": "2.4"},
-        "http_version": socket.http_version,
-        "scheme": "wss" if socket.scheme == "https" else "ws",
-        "path": socket.path,
-        "raw_path": bytes(socket.raw_path),
-        "query_string": bytes(socket.query_string),
-        "root_path": "",
-        "headers": headers,
-        "client": socket.client,
-        "server": socket.server,
-        "subprotocols": subprotocols,
-        "state": state.copy(),
-    }
-    connected = False
-
-    async def receive():
-        nonlocal connected
-        if not connected:
-            connected = True
-            return {"type": "websocket.connect"}
-        event = socket.try_receive()
-        if event is None:
-            waiter = asyncio.get_running_loop().create_future()
-            waiters[socket.id] = (socket, waiter)
-            try:
-                event = await waiter
-            finally:
-                waiters.pop(socket.id, None)
-        return event
-
-    async def send(message):
-        kind = message.get("type")
-        if kind == "websocket.accept":
-            socket.accept(
-                message.get("subprotocol"),
-                [(bytes(name), bytes(value)) for name, value in message.get("headers", [])],
-            )
-        elif kind == "websocket.send":
-            waiting = socket.send(message.get("text"), message.get("bytes"))
-            if waiting is not None:
-                await waiting
-        elif kind == "websocket.close":
-            waiting = socket.close(int(message.get("code", 1000)), message.get("reason") or "")
-            if waiting is not None:
-                await waiting
-        else:
-            raise RuntimeError(f"unexpected ASGI websocket message: {kind!r}")
-
-    try:
-        await application(scope, receive, send)
-    except BaseException as error:
-        socket.fail(_exception_text(error))
-    finally:
-        socket.finish()
-
-
-async def drive(application, control):
-    incoming = asyncio.Queue()
-    outgoing = asyncio.Queue()
-
-    async def receive():
-        return await incoming.get()
-
-    async def send(message):
-        await outgoing.put(message)
-
-    state = {}
-    scope = {
-        "type": "lifespan",
-        "asgi": {"version": "3.0", "spec_version": "2.0"},
-        "state": state,
-    }
-    task = asyncio.create_task(application(scope, receive, send))
-    startup_message = asyncio.create_task(outgoing.get())
-    await incoming.put({"type": "lifespan.startup"})
-
-    done, _ = await asyncio.wait(
-        (task, startup_message), return_when=asyncio.FIRST_COMPLETED
-    )
-
-    # An application that ends the lifespan scope without answering does not
-    # implement the protocol. That is allowed, and it is how most of them say
-    # so: Django raises "can only handle ASGI/HTTP connections". Refusing is
-    # not failing — what fails is `lifespan.startup.failed`, below, which an
-    # application sends only after choosing to speak the protocol.
-    lifespan = startup_message in done
-    if not lifespan:
-        error = task.exception()
-        startup_message.cancel()
-        control.lifespan_absent(
-            _exception_text(error)
-            if error is not None
-            else "the application returned without sending a lifespan message"
-        )
-    else:
-        message = startup_message.result()
-        message_type = message.get("type")
-        if message_type == "lifespan.startup.failed":
-            detail = message.get("message") or "ASGI lifespan startup failed"
-            control.startup_failed(detail)
-            await _cancel(task)
-            raise RuntimeError(detail)
-        if message_type != "lifespan.startup.complete":
-            detail = f"unexpected ASGI lifespan startup message: {message_type!r}"
-            control.startup_failed(detail)
-            await _cancel(task)
-            raise RuntimeError(detail)
-
-    control.startup_complete()
-    requests = set()
-    loop = asyncio.get_running_loop()
-    finished = loop.create_future()
-    doorbell = control.doorbell()
-
-    # The loop takes requests itself: the doorbell is one more descriptor it
-    # watches, and each time it is readable every request waiting is taken at
-    # once. No second Python thread asks for work, so the GIL has one owner.
-    # WebSockets waiting for a message and HTTP requests waiting for a part
-    # of their body, by id: the doorbell names them and the loop resolves
-    # their waits here, on its own thread.
-    waiters = {}
-    # Django Channels' layer, when gufi installed it, waits in the same table.
-    channel_layer = sys.modules.get("claviron.channels")
-    if channel_layer is not None:
-        channel_layer._waiters = waiters
-
-    def answer():
-        exchanges, ready, last = control.take_exchanges()
-        for socket_id in ready:
-            entry = waiters.pop(socket_id, None)
-            if entry is None:
-                continue
-            socket, waiter = entry
-            event = socket.try_receive()
-            if event is None:
-                waiters[socket_id] = entry
-            elif not waiter.done():
-                waiter.set_result(event)
-        for exchange in exchanges:
-            if exchange.kind == "websocket":
-                work = drive_websocket(application, exchange, state, waiters)
-            else:
-                work = drive_http(application, exchange, state, waiters)
-            request = loop.create_task(work)
-            requests.add(request)
-            request.add_done_callback(requests.discard)
-        if last and not finished.done():
-            finished.set_result(None)
-
-    loop.add_reader(doorbell, answer)
-    answer()
-    await finished
-
-    # Stop admission, but keep serving body/message wakeups for accepted work.
-    try:
-        if requests:
-            await asyncio.gather(*requests, return_exceptions=True)
-    finally:
-        loop.remove_reader(doorbell)
-
-    # An application that never spoke the protocol has nothing to be told the
-    # process is ending, and the scope it refused is already over.
-    if not lifespan:
-        return
-
-    shutdown_message = asyncio.create_task(outgoing.get())
-    await incoming.put({"type": "lifespan.shutdown"})
-
-    done, _ = await asyncio.wait(
-        (task, shutdown_message), return_when=asyncio.FIRST_COMPLETED
-    )
-    if shutdown_message not in done:
-        error = task.exception()
-        if error is not None:
-            raise error
-        raise RuntimeError(
-            "ASGI application returned before lifespan shutdown completed"
-        )
-
-    message = shutdown_message.result()
-    message_type = message.get("type")
-    if message_type == "lifespan.shutdown.failed":
-        detail = message.get("message") or "ASGI lifespan shutdown failed"
-        await _cancel(task)
-        raise RuntimeError(detail)
-    if message_type != "lifespan.shutdown.complete":
-        await _cancel(task)
-        raise RuntimeError(
-            f"unexpected ASGI lifespan shutdown message: {message_type!r}"
-        )
-
-    await task
-"#;
+const APPLICATION_DRIVER: &str = include_str!("asgi/driver.py");
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -1947,35 +1658,47 @@ fn install_claviron_module(
     Ok(())
 }
 
-/// Start the interpreter as the environment's own `python` would start.
-///
-/// An embedded interpreter finds its standard library by walking up from the
-/// executable it is told it is — and by default that is this binary, which
-/// lives nowhere near a Python installation. The walk ends at `/`, and on a
-/// merged-/usr system `/lib/python3.x` is the distribution's library: a
-/// 3.13.13 interpreter then runs Debian's 3.13.5 stdlib without a word, and
-/// only fails when a C module the two builds disagree on is missing.
-///
-/// Naming the environment's `bin/python` as the executable makes CPython read
-/// its `pyvenv.cfg`: `home` gives the installation the library comes from,
-/// and the environment becomes `sys.prefix`, exactly as when the application
-/// is run by that `python`. Without an environment, CPython's own search
-/// stands as before.
+/// Start the linked CPython 3.15, with its installation or the declared venv.
+/// Never let the runner executable or ambient PYTHONHOME select another stdlib.
 fn initialize_interpreter(virtual_environment: Option<&Path>) -> Result<()> {
-    let executable = virtual_environment
-        .map(|venv| {
+    static INITIALIZATION: Mutex<()> = Mutex::new(());
+    static ENVIRONMENT: OnceLock<Option<PathBuf>> = OnceLock::new();
+    let _initialization = INITIALIZATION.lock().map_err(|_| {
+        Error::Python("interpreter initialization lock poisoned".to_owned())
+    })?;
+    let executable = match virtual_environment {
+        Some(venv) => {
+            let config = std::fs::read_to_string(venv.join("pyvenv.cfg"))
+                .map_err(|error| {
+                    Error::Python(format!(
+                        "cannot read virtual environment pyvenv.cfg: {error}"
+                    ))
+                })?;
+            if !is_python_315_environment(&config) {
+                return Err(Error::Python(
+                    "virtual environment must be created from CPython 3.15"
+                        .to_owned(),
+                ));
+            }
             if cfg!(windows) {
                 venv.join("Scripts").join("python.exe")
             } else {
                 venv.join("bin").join("python")
             }
-        })
-        .filter(|python| python.exists());
-    let Some(executable) = executable else {
-        Python::initialize();
-        return Ok(());
+        }
+        None => PathBuf::from(env!("GUFI_PYTHON_EXECUTABLE")),
     };
+    if !executable.is_file() {
+        return Err(Error::Python(format!(
+            "selected CPython executable does not exist: {}",
+            executable.display()
+        )));
+    }
     let executable = CString::new(path_text(&executable)?)
+        .map_err(|error| Error::Python(error.to_string()))?;
+    let environment = virtual_environment
+        .map(Path::canonicalize)
+        .transpose()
         .map_err(|error| Error::Python(error.to_string()))?;
 
     // SAFETY: the config is initialised before use and cleared on every path;
@@ -1984,7 +1707,13 @@ fn initialize_interpreter(virtual_environment: Option<&Path>) -> Result<()> {
     // releases it.
     unsafe {
         if pyo3::ffi::Py_IsInitialized() != 0 {
-            return Ok(());
+            return if ENVIRONMENT.get() == Some(&environment) {
+                Ok(())
+            } else {
+                Err(Error::Python(
+                    "interpreter ownership/environment differs; replace the worker instead of switching interpreters".to_owned(),
+                ))
+            };
         }
         let mut config = std::mem::MaybeUninit::<pyo3::ffi::PyConfig>::uninit();
         pyo3::ffi::PyConfig_InitPythonConfig(config.as_mut_ptr());
@@ -1994,6 +1723,9 @@ fn initialize_interpreter(virtual_environment: Option<&Path>) -> Result<()> {
         config.install_signal_handlers = 0;
         config.parse_argv = 0;
         config.configure_c_stdio = 0;
+        config.use_environment = 0;
+        config.user_site_directory = 0;
+        config.safe_path = 1;
 
         let config_ptr: *mut pyo3::ffi::PyConfig = &mut config;
         let status = pyo3::ffi::PyConfig_SetBytesString(
@@ -2015,6 +1747,11 @@ fn initialize_interpreter(virtual_environment: Option<&Path>) -> Result<()> {
             ));
         }
         pyo3::ffi::PyEval_SaveThread();
+        ENVIRONMENT.set(environment).map_err(|_| {
+            Error::Python(
+                "interpreter environment was already initialized".to_owned(),
+            )
+        })?;
     }
     Ok(())
 }
@@ -2024,74 +1761,67 @@ fn configure_python(
     definition: &PythonApplication,
 ) -> Result<()> {
     let sys = py.import("sys").map_err(|error| python_error(py, error))?;
+    let version: (u8, u8) = sys
+        .getattr("version_info")
+        .and_then(|value| {
+            Ok((value.get_item(0)?.extract()?, value.get_item(1)?.extract()?))
+        })
+        .map_err(|error| python_error(py, error))?;
+    if version != (3, 15) {
+        return Err(Error::Python("Gufi requires CPython 3.15".to_owned()));
+    }
+    if let Some(environment) = &definition.virtual_environment {
+        let prefix: PathBuf = sys
+            .getattr("prefix")
+            .and_then(|value| value.extract())
+            .map_err(|error| python_error(py, error))?;
+        let requested = environment
+            .canonicalize()
+            .map_err(|error| Error::Python(error.to_string()))?;
+        let current = prefix
+            .canonicalize()
+            .map_err(|error| Error::Python(error.to_string()))?;
+        if requested != current {
+            return Err(Error::Python(
+                "the initialized interpreter belongs to a different environment; replace the worker to change environments".to_owned(),
+            ));
+        }
+    }
     let sys_path =
         sys.getattr("path").map_err(|error| python_error(py, error))?;
     let sys_path = sys_path
         .cast_into::<PyList>()
         .map_err(|error| Error::Python(error.to_string()))?;
     for path in definition.module_paths.iter().rev() {
-        sys_path
-            .insert(0, path_text(path)?)
-            .map_err(|error| python_error(py, error))?;
-    }
-
-    if let Some(virtual_environment) = &definition.virtual_environment {
-        let version = sys
-            .getattr("version_info")
-            .map_err(|error| python_error(py, error))?;
-        let major: u8 = version
-            .getattr("major")
-            .and_then(|value| value.extract())
-            .map_err(|error| python_error(py, error))?;
-        let minor: u8 = version
-            .getattr("minor")
-            .and_then(|value| value.extract())
-            .map_err(|error| python_error(py, error))?;
-        let site_packages = if cfg!(windows) {
-            virtual_environment.join("Lib").join("site-packages")
-        } else {
-            virtual_environment
-                .join("lib")
-                .join(format!("python{major}.{minor}"))
-                .join("site-packages")
-        };
-        if !site_packages.exists() {
-            return Err(Error::Python(format!(
-                "Python virtual environment has no site-packages directory: {}",
-                site_packages.display()
-            )));
-        }
-        let site_packages = path_text(&site_packages)?;
-
-        // `addsitedir` appends, and it also reads the `.pth` files that
-        // editable installs and namespace packages rely on. Appending alone
-        // leaves the environment *behind* the interpreter's own directories,
-        // so a package the system happens to ship wins over the one the
-        // application installed — which is the opposite of what an
-        // environment is for. Everything it added is therefore moved to the
-        // front afterwards, keeping the order `site` chose among them.
-        let before = sys_path.len();
-        py.import("site")
-            .and_then(|site| site.call_method1("addsitedir", (site_packages,)))
-            .map_err(|error| python_error(py, error))?;
-
-        let added: Vec<_> = (before..sys_path.len())
-            .map(|index| sys_path.get_item(index))
-            .collect::<std::result::Result<_, _>>()
-            .map_err(|error| python_error(py, error))?;
-        for index in (before..sys_path.len()).rev() {
+        let path = path_text(path)?;
+        if !sys_path.contains(path).map_err(|error| python_error(py, error))? {
             sys_path
-                .del_item(index)
-                .map_err(|error| python_error(py, error))?;
-        }
-        for (offset, entry) in added.into_iter().enumerate() {
-            sys_path
-                .insert(offset, entry)
+                .insert(0, path)
                 .map_err(|error| python_error(py, error))?;
         }
     }
+    // CPython processed the selected environment's site directories during
+    // initialization, including PEP 829 .start files. Replaying addsitedir here
+    // would run startup hooks again on every ASGI lifespan restart.
     Ok(())
 }
+
+fn is_python_315_environment(config: &str) -> bool {
+    let mut declared = false;
+    for (key, value) in config.lines().filter_map(|line| line.split_once('=')) {
+        if matches!(key.trim(), "version" | "version_info") {
+            if !value.trim().split('.').take(2).eq(["3", "15"]) {
+                return false;
+            }
+            declared = true;
+        }
+    }
+    declared
+}
+
+#[cfg(test)]
+#[path = "../tests/environment.rs"]
+mod environment_tests;
 
 fn path_text(path: &Path) -> Result<&str> {
     path.to_str().ok_or_else(|| {
