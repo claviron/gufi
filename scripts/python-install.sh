@@ -37,17 +37,17 @@ set -euo pipefail
 #   PYTHON_VERSION=3.13.13 scripts/python-install.sh
 #   STATIC=1 scripts/python-install.sh     # libpython.a instead, for a runner
 #                                          # linked statically (prod option)
-if [[ "$(uname -s)" == "Darwin" ]]; then
-  echo "ERROR: macOS runners use the uv-managed Python as it is; see the header." >&2
-  exit 2
-fi
+#if [[ "$(uname -s)" == "Darwin" ]]; then
+#  echo "ERROR: macOS runners use the uv-managed Python as it is; see the header." >&2
+#  exit 2
+#fi
 
-PYTHON_VERSION="${PYTHON_VERSION:-3.14.8}"
+PYTHON_VERSION="${PYTHON_VERSION:-3.15.0}"
 PYTHON_MINOR="${PYTHON_VERSION%.*}"
 SRC_ROOT="${SRC_ROOT:-$HOME/src}"
 PYTHON_SRC_DIR="${PYTHON_SRC_DIR:-$SRC_ROOT/Python-$PYTHON_VERSION}"
 PYTHON_DIR="${PYTHON_INSTALL_DIR:-/opt/python-$PYTHON_MINOR}"
-INSTALL_WITH_SUDO=0
+INSTALL_WITH_SUDO=1
 STATIC="${STATIC:-0}"
 MAKE_JOBS="${MAKE_JOBS:-}"
 SKIP_APT="${SKIP_APT:-0}"
