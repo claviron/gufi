@@ -18,7 +18,7 @@ yours, moving a piece of work across that line is a local decision instead of a
 rewrite:
 
 - **A function in Rust, called from Python.** `configure` registers a typed
-  handler and the application awaits it through `claviron.invoke`. It is a
+  handler and the application awaits it through `gufi.invoke`. It is a
   native extension in everything but the build — same process, same binary, no
   separate `.so`, no FFI to maintain.
 - **A route in Rust, never reaching Python.** Declare it and it answers;
@@ -34,13 +34,13 @@ you already have.
 
 ```toml
 [dependencies]
-claviron = { version = "0.2", default-features = false, features = ["server"] }
-gufi     = "0.1"
+claviron = { version = "0.2.0-alpha.18", default-features = false, features = ["server"] }
+gufi     = "0.1.0-alpha.2"
 tokio    = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 axum     = "0.8"   # or warp, or nothing — see "Your router stays yours"
 ```
 
-Neither Claviron crate is released yet; today both are path dependencies.
+APIs and configuration may change between alpha releases.
 
 ```rust
 // src/main.rs
@@ -126,22 +126,26 @@ cannot end up with two of them.
 through a module the runtime installs into the interpreter:
 
 ```python
-import claviron
+import gufi
 
-response = await claviron.invoke("claviron.ping.v1", {"echo": "app"})
+response = await gufi.invoke("claviron.ping.v1", {"echo": "app"})
 ```
 
 The call stays in the process — it reaches a handler in this same binary
 rather than leaving over a socket.
 
-Because the module is installed at runtime it is not in your virtual
-environment, so an editor has nothing to resolve the import against. The
-[`claviron`](https://pypi.org/project/claviron/) package on PyPI carries its
-signatures and nothing else:
+Gufi installs this native module at runtime; it is not a Python package in the
+application's virtual environment. The local [stubs](stubs/gufi/__init__.pyi)
+describe invocation, counters, broadcasting, logging and the optional
+[Django Channels layer](stubs/gufi/channels.pyi). Add this repository's `stubs/`
+directory to your editor's stub search path. They contain type declarations
+only, not a Python implementation or a fallback runtime.
 
-```sh
-uv add --dev claviron
-```
+Capabilities are available when configured and enabled by the application's
+Gufi build. Use `gufi.LogHandler` for logging and
+`gufi.channels.OrbitChannelLayer` for Django Channels. No `claviron` Python
+alias is provided; Rust `claviron::...` names and invocation operation
+identifiers such as `claviron.ping.v1` are unchanged.
 
 ## Registering your own services
 

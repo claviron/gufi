@@ -221,11 +221,11 @@ class DriverTests(unittest.IsolatedAsyncioTestCase):
         control = self.control()
         failed, pending = PendingExchange(1), PendingExchange(2)
         layer = SimpleNamespace(_waiters=None)
-        previous = sys.modules.get("claviron.channels")
-        sys.modules["claviron.channels"] = layer
+        previous = sys.modules.get("gufi.channels")
+        sys.modules["gufi.channels"] = layer
         self.addCleanup(
-            lambda: sys.modules.pop("claviron.channels", None)
-            if previous is None else sys.modules.__setitem__("claviron.channels", previous)
+            lambda: sys.modules.pop("gufi.channels", None)
+            if previous is None else sys.modules.__setitem__("gufi.channels", previous)
         )
 
         async def app(scope, receive, send):

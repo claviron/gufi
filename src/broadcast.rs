@@ -1,6 +1,6 @@
 //! Claviron's broadcast service in a Python application's process.
 //!
-//! Two things, both thin: `claviron.broadcast(...)`, which publishes from
+//! Two things, both thin: `gufi.broadcast(...)`, which publishes from
 //! Python straight into the service in this process — the round trip a
 //! Pusher client library makes over HTTP to a remote server is not needed
 //! when the server is here — and the acceptance of a Pusher WebSocket that
@@ -31,8 +31,8 @@ impl Publisher {
     }
 }
 
-/// `claviron.broadcast`, as Python sees it.
-#[pyclass(name = "Broadcast", module = "claviron", frozen)]
+/// `gufi.broadcast`, as Python sees it.
+#[pyclass(name = "Broadcast", module = "gufi", frozen)]
 pub(crate) struct PythonBroadcast {
     publisher: Publisher,
 }

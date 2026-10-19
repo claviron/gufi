@@ -1,4 +1,4 @@
-//! `claviron.LogHandler`: Python's standard `logging` — Django's, FastAPI's,
+//! `gufi.LogHandler`: Python's standard `logging` — Django's, FastAPI's,
 //! any application's — on a log channel `logging.yaml` declares.
 //!
 //! Python's own output already goes to the server's log; what an application
@@ -13,7 +13,7 @@ use claviron::logging::pipeline::{ChannelId, Level, Record, Value, installed};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyString};
 
-/// The Python half: `claviron.LogHandler`, a `logging.Handler`.
+/// The Python half: `gufi.LogHandler`, a `logging.Handler`.
 pub(crate) const MODULE_SOURCE: &str = include_str!("log.py");
 
 /// The id of a declared channel, or None: undeclared, or no pipeline.

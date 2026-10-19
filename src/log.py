@@ -1,9 +1,9 @@
-"""`claviron.LogHandler`: the standard `logging` module on a Claviron log channel.
+"""`gufi.LogHandler`: the standard `logging` module on a Claviron log channel.
 
 Configure it like any handler — Django's ``LOGGING``, ``logging.config``::
 
     "handlers": {
-        "claviron": {"class": "claviron.LogHandler", "channel": "django"},
+        "gufi": {"class": "gufi.LogHandler", "channel": "django"},
     }
 
 Each record goes to the channel ``logging.yaml`` declares, through the fleet's
@@ -15,7 +15,7 @@ an exception become fields.
 import logging
 import sys
 
-_claviron = sys.modules["claviron"]
+_gufi = sys.modules["gufi"]
 
 # The attributes every LogRecord has. Whatever else a record carries came from
 # `extra=` and becomes a field.
@@ -25,7 +25,7 @@ _STANDARD = set(vars(logging.LogRecord("", 0, "", 0, "", (), None))) | {"message
 class LogHandler(logging.Handler):
     def __init__(self, channel, level=logging.NOTSET):
         super().__init__(level)
-        self._channel = _claviron._log_channel(channel)
+        self._channel = _gufi._log_channel(channel)
         if self._channel is None:
             raise ValueError(f"Claviron log channel {channel!r} is not declared in logging.yaml")
 
@@ -41,7 +41,7 @@ class LogHandler(logging.Handler):
                 fields["exception.class"] = type(error).__qualname__
                 fields["exception.message"] = str(error)
                 fields["exception.trace"] = self.formatException(record.exc_info)
-            _claviron._log(
+            _gufi._log(
                 self._channel,
                 record.levelname,
                 record.getMessage(),

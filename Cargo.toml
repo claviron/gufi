@@ -4,8 +4,14 @@ name = "gufi"
 version = "0.1.0-alpha.2"
 edition = "2024"
 description = "Python runner for Claviron runtime"
-# Pre-releases go to the de02 registry only.
-publish = ["de02"]
+publish = true
+license = "MIT"
+repository = "https://github.com/claviron/gufi"
+homepage = "https://github.com/claviron"
+documentation = "https://docs.rs/gufi"
+keywords = ["python", "asgi", "claviron", "runtime", "websocket"]
+categories = ["web-programming::http-server", "api-bindings", "asynchronous"]
+include = ["/src/**", "/stubs/**", "/assets/gufi.svg", "/build.rs", "/Cargo.toml", "/README.md", "/LICENSE"]
 # Carries the linked Python's directory to the application's `build.rs` as
 # `DEP_GUFI_PYTHON_LIB_DIR`; see `build.rs`.
 links = "gufi"
@@ -23,7 +29,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1.0" }
 serde_yaml = { version = "0.9" }
 toml_edit = { version = "0.25", default-features = false, features = ["parse"] }
-claviron = { path = "../claviron", default-features = false, features = [
+claviron = { version = "0.2.0-alpha.18", path = "../claviron", default-features = false, features = [
     "http",
     "runner",
     "supervisor",
@@ -77,13 +83,13 @@ bench = ["axum", "claviron/bench"]
 metrics = ["claviron/metrics"]
 # Claviron's broadcast service in this process: Pusher-compatible channels a
 # browser subscribes to with pusher-js or Laravel Echo, reached over Orbit, and
-# `claviron.broadcast(...)` for the application to publish in process, with no
+# `gufi.broadcast(...)` for the application to publish in process, with no
 # HTTP round trip. Built in, the service runs and reads `broadcast.yaml` beside
 # the application; off by default, so an application that broadcasts nothing
 # carries none of it.
 broadcast = ["claviron/broadcast"]
 # Django additions, under `src/django/`: Channels' channel layer
-# (`claviron.channels.OrbitChannelLayer`) over the broadcast service's groups,
+# (`gufi.channels.OrbitChannelLayer`) over the broadcast service's groups,
 # configured by `broadcasting.channels` in gufi.yaml. The project installs
 # `channels` and `msgpack` itself.
 django = ["broadcast"]
@@ -93,7 +99,7 @@ django = ["broadcast"]
 files = ["axum", "claviron/files"]
 # Claviron's log pipeline for this application's fleet: the channels
 # `logging.yaml` beside it declares, written by the master's one writer, and
-# `claviron.LogHandler` putting Python's `logging` on them — what the
+# `gufi.LogHandler` putting Python's `logging` on them — what the
 # `claviron` log driver is to Laravel. `log-otlp` adds the OTLP adapter.
 log = ["claviron/log-pipeline"]
 log-otlp = ["log", "claviron/log-otlp"]

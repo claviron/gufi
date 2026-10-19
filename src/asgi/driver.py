@@ -291,7 +291,7 @@ async def _drive(application, control, lifecycle):
     # their waits here, on its own thread.
     waiters = {}
     # Django Channels' layer, when gufi installed it, waits in the same table.
-    channel_layer = sys.modules.get("claviron.channels")
+    channel_layer = sys.modules.get("gufi.channels")
     if channel_layer is not None:
         channel_layer._waiters = waiters
 

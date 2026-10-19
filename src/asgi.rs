@@ -223,7 +223,7 @@ impl PythonApplication {
         self
     }
 
-    /// The broadcast service, as `claviron.broadcast(channel, event, data)`,
+    /// The broadcast service, as `gufi.broadcast(channel, event, data)`,
     /// publishing to `default_application` unless a call names another.
     #[cfg(feature = "broadcast")]
     pub fn broadcast(
@@ -239,7 +239,7 @@ impl PythonApplication {
     }
 
     /// Django Channels' layer over the broadcast service's groups, as
-    /// `claviron.channels.OrbitChannelLayer`.
+    /// `gufi.channels.OrbitChannelLayer`.
     #[cfg(feature = "django")]
     pub(crate) fn channels(
         mut self,
@@ -249,7 +249,7 @@ impl PythonApplication {
         self
     }
 
-    /// The fleet's counter table, as `claviron.counter(key)`.
+    /// The fleet's counter table, as `gufi.counter(key)`.
     pub fn counters(
         mut self,
         table: Arc<claviron::orbit::Counter>,
@@ -276,7 +276,7 @@ impl PythonApplication {
         let (commands, doorbell) = commands()?;
         let (startup_tx, startup_rx) = mpsc::sync_channel(1);
         let handle = thread::Builder::new()
-            .name("claviron-asgi".to_owned())
+            .name("gufi-asgi".to_owned())
             .spawn({
                 let commands = commands.clone();
                 move || {
@@ -795,7 +795,7 @@ impl BodyFeed {
     }
 }
 
-#[pyclass]
+#[pyclass(module = "gufi")]
 struct LifespanControl {
     startup: Mutex<Option<mpsc::SyncSender<std::result::Result<(), String>>>>,
     doorbell: Mutex<Doorbell>,
@@ -904,7 +904,7 @@ impl LifespanControl {
     }
 }
 
-#[pyclass]
+#[pyclass(module = "gufi")]
 struct HttpExchange {
     request: HttpRequest,
     body: BodyFeed,
@@ -1173,7 +1173,7 @@ impl Drop for HttpExchange {
     }
 }
 
-#[pyclass]
+#[pyclass(module = "gufi")]
 struct WebSocketExchange {
     id: u64,
     request: HttpRequest,
@@ -1416,7 +1416,7 @@ fn run_application(
     Python::attach(|py| {
         configure_python(py, &definition)?;
 
-        install_claviron_module(
+        install_gufi_module(
             py,
             definition.invocations,
             definition.counters,
@@ -1455,8 +1455,8 @@ fn run_application(
         .map_err(|error| python_error(py, error))?;
         let code = CString::new(APPLICATION_DRIVER)
             .expect("application driver has no NUL bytes");
-        let filename = CString::new("<claviron-asgi>").unwrap();
-        let name = CString::new("_claviron_asgi_lifespan").unwrap();
+        let filename = CString::new("<gufi-asgi>").unwrap();
+        let name = CString::new("_gufi_asgi_lifespan").unwrap();
         let driver = PyModule::from_code(py, &code, &filename, &name)
             .map_err(|error| python_error(py, error))?;
         let coroutine = driver
@@ -1470,7 +1470,7 @@ fn run_application(
     })
 }
 
-#[pyclass]
+#[pyclass(module = "gufi")]
 struct PythonInvocationBridge {
     router: Arc<InvocationRouter>,
 }
@@ -1512,13 +1512,11 @@ impl PythonInvocationBridge {
 
 /// Installs the module the application imports to reach this process.
 ///
-/// The name is `claviron`, not the runner's. This engine installs it, and it
-/// is here whether or not a runner sits above: an application that provides
-/// its own binary and boots [`PythonApplication`] directly gets the same
-/// module. The operations reached through it are Claviron's as well
-/// (`claviron.ping.v1` and the rest), so the module is named after what is
-/// answering rather than after whoever assembled the process.
-fn install_claviron_module(
+/// Gufi owns this Python API, including its native types and optional adapters.
+/// An application booting [`PythonApplication`] directly gets the same module.
+/// Claviron operation identifiers and Rust service names remain unchanged;
+/// no legacy Python module alias is installed.
+fn install_gufi_module(
     py: Python<'_>,
     router: Option<Arc<InvocationRouter>>,
     counters: Option<Arc<claviron::orbit::Counter>>,
@@ -1546,7 +1544,7 @@ fn install_claviron_module(
     if nothing {
         return Ok(());
     }
-    let module = PyModule::new(py, "claviron")
+    let module = PyModule::new(py, "gufi")
         .map_err(|error| python_error(py, error))?;
     if let Some(router) = router {
         let bridge = Py::new(py, PythonInvocationBridge { router })
@@ -1594,11 +1592,11 @@ fn install_claviron_module(
     let modules = modules
         .cast_into::<PyDict>()
         .map_err(|error| Error::Python(error.to_string()))?;
-    PyDictMethods::set_item(&modules, "claviron", &module)
+    PyDictMethods::set_item(&modules, "gufi", &module)
         .map_err(|error| python_error(py, error))?;
 
-    // `claviron.LogHandler` and the two functions behind it: the handler's
-    // Python reads `claviron` from `sys.modules`, so it runs after.
+    // `gufi.LogHandler` and the two functions behind it: the handler's
+    // Python reads `gufi` from `sys.modules`, so it runs after.
     #[cfg(feature = "log")]
     {
         let functions = [
@@ -1613,8 +1611,8 @@ fn install_claviron_module(
         }
         let code = CString::new(crate::log::MODULE_SOURCE)
             .expect("log handler source has no NUL bytes");
-        let filename = CString::new("<claviron-log>").unwrap();
-        let name = CString::new("claviron._log").unwrap();
+        let filename = CString::new("<gufi-log>").unwrap();
+        let name = CString::new("gufi._log").unwrap();
         let handler = PyModule::from_code(py, &code, &filename, &name)
             .and_then(|source| source.getattr("LogHandler"))
             .map_err(|error| python_error(py, error))?;
@@ -1623,8 +1621,8 @@ fn install_claviron_module(
             .map_err(|error| python_error(py, error))?;
     }
 
-    // `claviron.channels`, importable by the dotted path Django settings name.
-    // Its Python needs `claviron._channels` in place, so it runs after the
+    // `gufi.channels`, importable by the dotted path Django settings name.
+    // Its Python needs `gufi._channels` in place, so it runs after the
     // module above is in `sys.modules`.
     #[cfg(feature = "django")]
     if let Some((layer, commands)) = channels {
@@ -1645,14 +1643,14 @@ fn install_claviron_module(
             .map_err(|error| python_error(py, error))?;
         let code = CString::new(MODULE_SOURCE)
             .expect("channel layer source has no NUL bytes");
-        let filename = CString::new("<claviron-channels>").unwrap();
-        let name = CString::new("claviron.channels").unwrap();
+        let filename = CString::new("<gufi-channels>").unwrap();
+        let name = CString::new("gufi.channels").unwrap();
         let channels = PyModule::from_code(py, &code, &filename, &name)
             .map_err(|error| python_error(py, error))?;
         module
             .add("channels", &channels)
             .map_err(|error| python_error(py, error))?;
-        PyDictMethods::set_item(&modules, "claviron.channels", channels)
+        PyDictMethods::set_item(&modules, "gufi.channels", channels)
             .map_err(|error| python_error(py, error))?;
     }
     Ok(())

@@ -2,7 +2,7 @@
 
 Name it in settings in place of ``channels_redis``::
 
-    CHANNEL_LAYERS = {"default": {"BACKEND": "claviron.channels.OrbitChannelLayer"}}
+    CHANNEL_LAYERS = {"default": {"BACKEND": "gufi.channels.OrbitChannelLayer"}}
 
 Its limits are the deployment's, written in ``gufi.yaml`` under
 ``broadcasting.channels`` (``capacity``, ``expiry``), not in ``CONFIG``.
@@ -19,7 +19,7 @@ import msgpack
 from channels.exceptions import ChannelFull
 from channels.layers import BaseChannelLayer
 
-_core = sys.modules["claviron"]._channels
+_core = sys.modules["gufi"]._channels
 
 # The application loop's table of waits by id, handed over by gufi's driver
 # when the loop starts. A receive waits in it the way a WebSocket's does.

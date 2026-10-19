@@ -1,4 +1,4 @@
-//! `claviron.counter(key)`: the fleet's keyed counters, from Python.
+//! `gufi.counter(key)`: the fleet's keyed counters, from Python.
 //!
 //! The table is Orbit's (`orbit-counter`, through Claviron's
 //! `CounterProvider`): one signed 64-bit value per key, in shared memory, the
@@ -8,9 +8,9 @@
 //! there is more than one worker.
 //!
 //! ```python
-//! import claviron
+//! import gufi
 //!
-//! hits = claviron.counter("hits")
+//! hits = gufi.counter("hits")
 //! hits.increment()        # the value after, across every worker
 //! hits.get()              # None until the key has been touched
 //! ```
@@ -22,7 +22,7 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
 /// One key of the fleet's counter table.
-#[pyclass(name = "Counter", module = "claviron", frozen)]
+#[pyclass(name = "Counter", module = "gufi", frozen)]
 pub(crate) struct PythonCounter {
     table: Arc<Counter>,
     key: String,
@@ -75,9 +75,9 @@ impl PythonCounter {
     fn __repr__(&self) -> String {
         match self.table.get(&self.key) {
             Ok(Some(value)) => {
-                format!("claviron.counter({:?}) = {value}", self.key)
+                format!("gufi.counter({:?}) = {value}", self.key)
             }
-            _ => format!("claviron.counter({:?})", self.key),
+            _ => format!("gufi.counter({:?})", self.key),
         }
     }
 }
@@ -94,8 +94,8 @@ fn error(error: claviron::orbit::counter::Error) -> PyErr {
     }
 }
 
-/// What `claviron.counter` is bound to: the table, handing out keys.
-#[pyclass(frozen)]
+/// What `gufi.counter` is bound to: the table, handing out keys.
+#[pyclass(module = "gufi", frozen)]
 pub(crate) struct Counters {
     table: Arc<Counter>,
 }

@@ -27,7 +27,7 @@ pub(crate) struct PythonApplicationService {
     handle: Arc<RwLock<Option<PythonApplicationHandle>>>,
     controller: Mutex<Option<Arc<PythonApplicationController>>>,
     /// The launch's `broadcasting:` block: the application
-    /// `claviron.broadcast` publishes to by default, and Channels' layer.
+    /// `gufi.broadcast` publishes to by default, and Channels' layer.
     #[cfg(feature = "broadcast")]
     broadcasting: crate::options::Broadcasting,
 }
