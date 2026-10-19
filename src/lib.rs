@@ -29,6 +29,9 @@ mod watch;
 #[cfg(feature = "websocket")]
 pub mod websocket;
 
+/// The Claviron facade used by this Gufi build, without a separate dependency.
+pub use claviron;
+
 /// The axum `register` builds against — Claviron's, re-exported so an
 /// application reaches it through the crate it actually depends on and cannot
 /// end up with a second one.

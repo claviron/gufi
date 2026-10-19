@@ -34,13 +34,15 @@ you already have.
 
 ```toml
 [dependencies]
-claviron = { version = "0.2.0-alpha.18", default-features = false, features = ["server"] }
 gufi     = "0.1.0-alpha.2"
 tokio    = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 axum     = "0.8"   # or warp, or nothing — see "Your router stays yours"
 ```
 
 APIs and configuration may change between alpha releases.
+
+The examples use `gufi::claviron`, added for the next release; published
+`0.1.0-alpha.2` does not yet include this re-export.
 
 ```rust
 // src/main.rs
@@ -60,6 +62,8 @@ async fn main() -> gufi::Result<()> {
 
 ```rust
 // src/app.rs
+use gufi::claviron::{AppState, registry};
+
 pub fn configure(state: &AppState) -> registry::Result<()> {
     // Register your application services and event listeners here.
     Ok(())
@@ -89,7 +93,7 @@ With the `cli` feature, `GufiOptions::from_args()` accepts `--config-path FILE`
 Gufi has no router. Bring axum, warp, tower-http or a bare `service_fn`:
 
 ```rust
-use claviron::AppState;
+use gufi::claviron::AppState;
 use gufi::axum::{Router, routing::get};
 
 pub fn router(state: AppState) -> Router {
@@ -158,7 +162,7 @@ being dropped.
 A Rust route reaches them with Claviron's extractor:
 
 ```rust
-use claviron::http::ext::Provide;
+use gufi::claviron::http::ext::Provide;
 
 async fn hits(Provide(counter): Provide<CounterService>) -> impl IntoResponse {
     Json(json!({ "hits": counter.hit() }))
