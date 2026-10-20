@@ -34,7 +34,7 @@ you already have.
 
 ```toml
 [dependencies]
-gufi     = "0.1.0-alpha.3"
+gufi     = "0.2.0-alpha.19"
 tokio    = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 axum     = "0.8"   # or warp, or nothing — see "Your router stays yours"
 ```
