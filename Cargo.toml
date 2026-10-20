@@ -1,7 +1,7 @@
 [package]
 autotests = false
 name = "gufi"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 edition = "2024"
 description = "Python runner for Claviron runtime"
 publish = true
@@ -29,7 +29,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1.0" }
 serde_yaml = { version = "0.9" }
 toml_edit = { version = "0.25", default-features = false, features = ["parse"] }
-claviron = { version = "0.2.0-alpha.18", path = "../claviron", default-features = false, features = [
+claviron = { version = "0.2.0-alpha.19", path = "../claviron", default-features = false, features = [
     "http",
     "runner",
     "supervisor",

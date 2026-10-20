@@ -34,15 +34,14 @@ you already have.
 
 ```toml
 [dependencies]
-gufi     = "0.1.0-alpha.2"
+gufi     = "0.1.0-alpha.3"
 tokio    = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 axum     = "0.8"   # or warp, or nothing — see "Your router stays yours"
 ```
 
 APIs and configuration may change between alpha releases.
 
-The examples use `gufi::claviron`, added for the next release; published
-`0.1.0-alpha.2` does not yet include this re-export.
+The examples use Claviron through Gufi's `gufi::claviron` re-export.
 
 ```rust
 // src/main.rs
