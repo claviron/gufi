@@ -8,6 +8,7 @@
 
 use std::future::{Future, poll_fn};
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use claviron::orbit::transport::{
@@ -49,6 +50,17 @@ pub(crate) async fn session(
         return;
     };
     let (parts, _) = request.into_parts();
+    let shutdown = parts
+        .extensions
+        .get::<claviron::runner::orbit::SessionShutdown>()
+        .cloned();
+    let retiring = async {
+        match shutdown {
+            Some(shutdown) => shutdown.cancelled().await,
+            None => std::future::pending().await,
+        }
+    };
+    tokio::pin!(retiring);
     let scope = crate::routing::scope(&parts);
     let Ok(WebSocketSession { decision, inbound, mut outbound }) =
         handle.handle_message_session(scope, transport)
@@ -62,6 +74,11 @@ pub(crate) async fn session(
     let decision = tokio::select! {
         biased;
         _ = poll_fn(|cx| reset.poll_reset(cx)) => return,
+        () = &mut retiring => {
+            if handshake.try_answer(503, Vec::new()) { let _ = outgoing.shutdown().await; }
+            else { outgoing.reset(); }
+            return;
+        },
         decision = decision => decision,
     };
     let headers = match decision {
@@ -81,8 +98,15 @@ pub(crate) async fn session(
         return;
     }
     tracing::debug!(?transport, "🛰 ASGI message session accepted");
-    relay(&mut incoming, &mut outgoing, &inbound, &mut outbound, message_limit)
-        .await;
+    relay(
+        &mut incoming,
+        &mut outgoing,
+        &inbound,
+        &mut outbound,
+        message_limit,
+        retiring,
+    )
+    .await;
     tracing::debug!(?transport, "🛰 ASGI message session ended");
 }
 
@@ -145,9 +169,12 @@ async fn relay<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, D: Delivery>(
     inbound: &D,
     outbound: &mut mpsc::Receiver<Message>,
     limit: usize,
+    shutdown: impl Future<Output = ()>,
 ) {
     let application_done = CancellationToken::new();
     let peer_failed = CancellationToken::new();
+    let retiring = AtomicBool::new(false);
+    tokio::pin!(shutdown);
 
     // The client's messages to the application. Its end drops the sender, and
     // the application's next `receive()` reads the disconnect.
@@ -160,6 +187,17 @@ async fn relay<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, D: Delivery>(
             let result = tokio::select! {
                 biased;
                 () = application_done.cancelled() => break,
+                () = &mut shutdown => {
+                    retiring.store(true, Ordering::Release);
+                    let close = Message::Close { code: 1001, reason: "server shutting down".into() };
+                    // Notify the ASGI owner in order, retaining its current
+                    // work and allowing it to finish output before returning.
+                    tokio::select! {
+                        () = application_done.cancelled() => {},
+                        _ = inbound.deliver(close) => {},
+                    }
+                    break;
+                },
                 result = records.read(incoming) => result,
             };
             let message = match result {
@@ -190,6 +228,7 @@ async fn relay<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, D: Delivery>(
     // The application's messages to the client, until it closes or returns.
     let to_client = async {
         let _finished = application_done.clone().drop_guard();
+        let mut closed = false;
         loop {
             let message = tokio::select! {
                 biased;
@@ -211,7 +250,22 @@ async fn relay<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, D: Delivery>(
                 return;
             }
             if closing {
+                closed = true;
                 break;
+            }
+        }
+        if !closed && retiring.load(Ordering::Acquire) {
+            let close = Message::Close {
+                code: 1001,
+                reason: "server shutting down".into(),
+            };
+            // All earlier application messages completed before this close.
+            let result = tokio::select! {
+                () = peer_failed.cancelled() => return,
+                result = write_message(outgoing, &close) => result,
+            };
+            if result.is_err() {
+                return;
             }
         }
         let _ = tokio::select! {

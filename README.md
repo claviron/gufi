@@ -233,6 +233,11 @@ H1/H2/H3 response. An ASGI refusal remains HTTP 403. Application completion
 ends the pending input read, while input FIN leaves accepted output free to
 drain. Protocol IO failures wake both directions. No drain deadline is added.
 
+On ingress retirement, Gufi delivers `websocket.disconnect` with code 1001 to
+the ASGI owner. The owner can finish its output before returning; Gufi then
+finishes the protocol close and joins the session. It does not cancel Python
+tasks or change the configured indefinite-drain policy.
+
 `link_message_limit: 1048576` in `gufi.yaml` declares the maximum text/binary
 payload in bytes. The default is 1 MiB; zero is rejected. The CLI accepts
 `--link-message-limit BYTES`, and the Rust builder accepts

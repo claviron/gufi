@@ -55,7 +55,15 @@ async fn application_close_ends_a_reader_waiting_on_a_partial_record() {
     peer.write_all(&[1, 8, 0, 0, 0, b'p']).await.unwrap();
     let close = Message::Close { code: 1000, reason: "done".into() };
     tx.send(close.clone()).await.unwrap();
-    relay(&mut input, &mut output, &inbox, &mut outgoing, 64).await;
+    relay(
+        &mut input,
+        &mut output,
+        &inbox,
+        &mut outgoing,
+        64,
+        std::future::pending(),
+    )
+    .await;
     assert_eq!(read_message(&mut peer).await.unwrap(), Some(close));
     assert_eq!(read_message(&mut peer).await.unwrap(), None);
     assert!(*inbox.ended.borrow());
@@ -95,8 +103,22 @@ async fn one_partial_stream_does_not_stop_another_and_fin_keeps_output_open() {
         drop(tx_b);
     };
     tokio::join!(
-        relay(&mut input_a, &mut output_a, &inbox_a, &mut sent_a, 64),
-        relay(&mut input_b, &mut output_b, &inbox_b, &mut sent_b, 64),
+        relay(
+            &mut input_a,
+            &mut output_a,
+            &inbox_a,
+            &mut sent_a,
+            64,
+            std::future::pending()
+        ),
+        relay(
+            &mut input_b,
+            &mut output_b,
+            &inbox_b,
+            &mut sent_b,
+            64,
+            std::future::pending()
+        ),
         scenario
     );
 }
@@ -109,8 +131,14 @@ async fn duplex_writes_progress_while_application_receive_is_backpressured() {
     let (tx, mut sent) = mpsc::channel(1);
     write_message(&mut peer, &Message::Text("one".into())).await.unwrap();
     write_message(&mut peer, &Message::Text("two".into())).await.unwrap();
-    let mut relay =
-        std::pin::pin!(relay(&mut input, &mut output, &inbox, &mut sent, 64));
+    let mut relay = std::pin::pin!(relay(
+        &mut input,
+        &mut output,
+        &inbox,
+        &mut sent,
+        64,
+        std::future::pending()
+    ));
     poll_fn(|cx| {
         assert!(relay.as_mut().poll(cx).is_pending());
         Poll::Ready(())
@@ -133,7 +161,15 @@ async fn oversized_header_stops_the_session_without_waiting_for_payload() {
     let (inbox, _received) = inbox();
     let (_tx, mut sent) = mpsc::channel(1);
     peer.write_all(&[2, 255, 255, 255, 255]).await.unwrap();
-    relay(&mut input, &mut output, &inbox, &mut sent, 64).await;
+    relay(
+        &mut input,
+        &mut output,
+        &inbox,
+        &mut sent,
+        64,
+        std::future::pending(),
+    )
+    .await;
     assert!(*inbox.ended.borrow());
     assert!(valid_message(&Message::Binary(vec![0; 65]), 64, false).is_err());
     assert!(
@@ -150,4 +186,45 @@ async fn oversized_header_stops_the_session_without_waiting_for_payload() {
     let mut bytes = Vec::new();
     peer.read_to_end(&mut bytes).await.unwrap();
     assert!(bytes.is_empty());
+}
+
+#[tokio::test]
+async fn retirement_notifies_an_idle_owner_and_drains_its_output_before_close()
+{
+    let (near, mut peer) = duplex(128);
+    let (mut input, mut output) = split(near);
+    let (inbox, mut received) = inbox();
+    let (tx, mut sent) = mpsc::channel(1);
+    let shutdown = CancellationToken::new();
+    let scenario = async {
+        shutdown.cancel();
+        assert!(matches!(
+            received.recv().await.unwrap(),
+            Message::Close { code: 1001, .. }
+        ));
+        // An owner may finish accepted work before returning. Retirement must
+        // neither cancel it nor claim completion while that output is pending.
+        tx.send(Message::Text("last reply".into())).await.unwrap();
+        assert_eq!(
+            read_message(&mut peer).await.unwrap(),
+            Some(Message::Text("last reply".into()))
+        );
+        drop(tx);
+        assert!(matches!(
+            read_message(&mut peer).await.unwrap(),
+            Some(Message::Close { code: 1001, .. })
+        ));
+        assert_eq!(read_message(&mut peer).await.unwrap(), None);
+    };
+    tokio::join!(
+        relay(
+            &mut input,
+            &mut output,
+            &inbox,
+            &mut sent,
+            64,
+            shutdown.cancelled()
+        ),
+        scenario
+    );
 }

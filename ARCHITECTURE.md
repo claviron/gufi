@@ -306,6 +306,15 @@ The shared runner's `Handshake::try_answer` reports publication failure so
 Gufi can reset its endpoint, waking the edge instead of leaving admission
 waiting on a reply that never entered the inbox.
 
+The runner attaches its generation's read-only `SessionShutdown` signal to
+each Link message request before handing it to the owner. Gufi observes it
+during admission and relay. Retirement queues an ASGI disconnect (1001), then
+waits for the owner to return and its accepted output to finish before sending
+the final close. Python tasks are not force-cancelled. This signal reaches an
+idle owner before ingress drain, rather than waiting for Python finalization
+which itself follows that drain. Ordinary in-flight HTTP work keeps its
+existing completion contract.
+
 ## Development ingress
 
 The private `http` module binds a plain HTTP/1 listener, collects one request
