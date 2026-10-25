@@ -20,6 +20,7 @@ fn launch() -> GufiOptions {
             ..Default::default()
         },
         root: Some("/srv/checkout".into()),
+        link_message_limit: std::num::NonZeroUsize::new(4096),
         ..Default::default()
     }
 }
@@ -35,6 +36,7 @@ fn a_launch_survives_the_envelope() {
     assert_eq!(back.runner.orbit, sent.runner.orbit);
     assert_eq!(back.runner.uds, sent.runner.uds);
     assert_eq!(back.own.root, sent.root);
+    assert_eq!(back.own.link_message_limit, sent.link_message_limit);
     assert_eq!(back.runner.h2, sent.runner.h2);
     assert_eq!(
         back.runner.trusted.iter().map(ToString::to_string).collect::<Vec<_>>(),

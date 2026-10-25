@@ -122,6 +122,8 @@ class Control:
 
 class SocketExchange(PendingExchange):
     kind = "websocket"
+    transport = "websocket"
+    method = "GET"
 
     def accept(self, subprotocol, headers):
         self.events.append(("accepted", subprotocol))
@@ -172,6 +174,31 @@ class DriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(exchange.error)
         self.assertEqual(exchange.events, [(201, []), (b"one", True), (b"two", False)])
         self.assertEqual(state, {"ready": True})
+
+    async def test_message_scope_preserves_the_original_transport(self):
+        for transport, version, method in [
+            ("websocket", "1.1", "GET"),
+            ("websocket", "2", "CONNECT"),
+            ("webtransport", "3", "CONNECT"),
+        ]:
+            exchange = SocketExchange(1)
+            exchange.transport, exchange.http_version, exchange.method = transport, version, method
+            exchange.incoming.append({"type": "websocket.receive", "text": "hello"})
+
+            async def app(scope, receive, send):
+                self.assertEqual(scope["type"], "websocket")
+                self.assertEqual(scope["http_version"], version)
+                self.assertEqual(scope["extensions"]["gufi.transport"], {
+                    "name": transport, "http_version": version, "method": method, "scheme": "https",
+                })
+                self.assertEqual((await receive())["type"], "websocket.connect")
+                await send({"type": "websocket.accept"})
+                self.assertEqual((await receive())["text"], "hello")
+                await send({"type": "websocket.close", "code": 1000})
+
+            await driver.drive_websocket(app, exchange, {}, {})
+            self.assertIsNone(exchange.error)
+            self.assertEqual(exchange.events, [("accepted", None), ("closed", 1000, "")])
 
     async def test_lazy_traceback_still_reports_application_errors(self):
         exchange = Exchange()

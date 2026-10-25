@@ -280,9 +280,31 @@ operations behind it are Claviron's, it is installed whether or not anything
 sits above the engine, and the same import keeps working when the application
 runs somewhere else. The module never exposes the raw Rust registry.
 
-**Current scope.** Lifespan and buffered request/response. No WebSocket, no
-streaming. A production transport must carry ASGI's streaming and backpressure
-rather than inherit this buffering.
+**Current scope.** Lifespan, streaming HTTP and WebSocket message sessions.
+Gufi owns the ASGI driver and Python execution; there is no separate
+`claviron-asgi` engine. The runner owns ingress and Link dispatch.
+
+### Link message adaptation
+
+The owner callback accepts H1 GET WebSockets, H2 CONNECT WebSockets and one
+HTTP/3 CONNECT reliable WT bidi stream per invocation. `MessageTransport`
+travels with the native exchange into the driver, where `gufi.transport`
+identifies the original transport, method, scheme and HTTP version. WT uses
+the ASGI WebSocket message vocabulary as an explicit Gufi extension, without
+claiming a full ASGI WebTransport session/datagram API.
+
+`orbit::relay` owns independent read and write futures and joins both. One
+Python message is pending in each direction. `link_message_limit` travels in
+the inherited launch and bounds records before allocation; application output
+uses the same payload bound. Input FIN closes ASGI receive but allows output
+to drain. Application completion wakes a pending read/delivery; malformed or
+failed input wakes a parked writer. Cancellation uses existing stream/reset
+signals and tokens, never elapsed-time polling or an invented drain deadline.
+
+An admission observes the stream reset while waiting for Python's decision.
+The shared runner's `Handshake::try_answer` reports publication failure so
+Gufi can reset its endpoint, waking the edge instead of leaving admission
+waiting on a reply that never entered the inbox.
 
 ## Development ingress
 

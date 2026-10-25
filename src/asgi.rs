@@ -390,6 +390,16 @@ impl PythonApplicationHandle {
         &self,
         request: HttpRequest,
     ) -> Result<WebSocketSession> {
+        self.handle_message_session(request, MessageTransport::WebSocket)
+    }
+
+    /// Adapt one reliable message stream to ASGI's WebSocket message contract.
+    /// WebTransport means one bidi stream, not ownership of its QUIC session.
+    pub fn handle_message_session(
+        &self,
+        request: HttpRequest,
+        transport: MessageTransport,
+    ) -> Result<WebSocketSession> {
         let (decision, decided) = oneshot::channel();
         // One message in flight each way: the side that is behind makes the
         // other wait, rather than a buffer growing between them.
@@ -398,6 +408,7 @@ impl PythonApplicationHandle {
         let (outbound_tx, outbound) = chunks::channel(1);
         let ends = WebSocketEnds {
             id,
+            transport,
             decision,
             inbound: Arc::clone(&shared),
             outbound: outbound_tx,
@@ -521,6 +532,23 @@ pub enum WebSocketDecision {
     Reject,
 }
 
+/// The network transport behind an ASGI message session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MessageTransport {
+    WebSocket,
+    /// A single reliable bidi stream using Link Text/Binary/Close records.
+    WebTransport,
+}
+
+impl MessageTransport {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::WebSocket => "websocket",
+            Self::WebTransport => "webtransport",
+        }
+    }
+}
+
 /// The Rust side of one WebSocket: the answer to the handshake, then messages
 /// both ways until either side closes.
 pub struct WebSocketSession {
@@ -534,6 +562,7 @@ pub struct WebSocketSession {
 /// The application's side of the same, handed to Python.
 struct WebSocketEnds {
     id: u64,
+    transport: MessageTransport,
     decision: oneshot::Sender<WebSocketDecision>,
     inbound: Arc<Inbound>,
     outbound: chunks::Sender<Message>,
@@ -1176,6 +1205,7 @@ impl Drop for HttpExchange {
 #[pyclass(module = "gufi")]
 struct WebSocketExchange {
     id: u64,
+    transport: MessageTransport,
     request: HttpRequest,
     decision: Mutex<Option<oneshot::Sender<WebSocketDecision>>>,
     inbound: Arc<Inbound>,
@@ -1189,6 +1219,7 @@ impl WebSocketExchange {
     ) -> Self {
         Self {
             id: ends.id,
+            transport: ends.transport,
             request,
             decision: Mutex::new(Some(ends.decision)),
             inbound: ends.inbound,
@@ -1213,6 +1244,16 @@ impl WebSocketExchange {
     #[getter]
     fn kind(&self) -> &'static str {
         "websocket"
+    }
+
+    #[getter]
+    fn transport(&self) -> &'static str {
+        self.transport.as_str()
+    }
+
+    #[getter]
+    fn method(&self) -> String {
+        self.request.method.clone()
     }
 
     #[getter]
@@ -1270,6 +1311,13 @@ impl WebSocketExchange {
         subprotocol: Option<String>,
         headers: Vec<(Vec<u8>, Vec<u8>)>,
     ) -> PyResult<()> {
+        if self.transport == MessageTransport::WebTransport
+            && subprotocol.is_some()
+        {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "WebSocket subprotocol negotiation is unavailable on a WebTransport message stream",
+            ));
+        }
         let Some(decision) = self.decision.lock().unwrap().take() else {
             return Err(pyo3::exceptions::PyRuntimeError::new_err(
                 "the WebSocket was already accepted or closed",

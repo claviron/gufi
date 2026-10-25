@@ -32,6 +32,10 @@ pub struct GufiOptions {
     #[cfg_attr(feature = "cli", arg(long))]
     pub venv: Option<PathBuf>,
 
+    /// Maximum text/binary message bytes over Link. Defaults to 1 MiB.
+    #[cfg_attr(feature = "cli", arg(long, value_name = "BYTES"))]
+    pub link_message_limit: Option<std::num::NonZeroUsize>,
+
     /// Broadcasting in this process: the application `gufi.broadcast`
     /// publishes to, and Django Channels' layer. Written in the file only;
     /// the applications' ids, keys and secrets are `broadcast.yaml`.
@@ -59,6 +63,7 @@ pub struct GufiOptions {
 pub(crate) struct Python {
     pub(crate) root: Option<PathBuf>,
     pub(crate) venv: Option<PathBuf>,
+    pub(crate) link_message_limit: Option<std::num::NonZeroUsize>,
     #[cfg(feature = "broadcast")]
     pub(crate) broadcasting: Option<Broadcasting>,
 }
@@ -74,6 +79,7 @@ impl GufiOptions {
             own: Python {
                 root: self.root,
                 venv: self.venv,
+                link_message_limit: self.link_message_limit,
                 #[cfg(feature = "broadcast")]
                 broadcasting: self.broadcasting,
             },
@@ -88,6 +94,7 @@ impl GufiOptions {
             runner: launch.runner,
             root: launch.own.root,
             venv: launch.own.venv,
+            link_message_limit: launch.own.link_message_limit,
             #[cfg(feature = "broadcast")]
             broadcasting: launch.own.broadcasting,
             config,
@@ -236,6 +243,9 @@ impl GufiOptions {
             runner: self.runner.over(written.runner),
             root: self.root.or(written.root),
             venv: self.venv.or(written.venv),
+            link_message_limit: self
+                .link_message_limit
+                .or(written.link_message_limit),
             #[cfg(feature = "broadcast")]
             broadcasting: self.broadcasting.or(written.broadcasting),
             config: self.config,

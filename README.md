@@ -212,6 +212,35 @@ Restart does not reload imported source or reinitialize CPython: source changes
 still use rolling worker replacement. Link connection events and command
 dispatch are shared infrastructure; Python execution stays Gufi-owned.
 
+## WebSocket and WebTransport messages over Link
+
+Gufi adapts H1/H2 WebSockets and HTTP/3 WebTransport reliable bidi streams to
+ASGI's `websocket.connect`, `websocket.receive`, `websocket.send` and
+`websocket.close` events. The edge owns the network handshake. Each WT bidi
+stream gets its own ASGI invocation, so a stream waiting for more bytes does
+not serialize the other streams or the application's writes.
+
+The scope retains the original HTTP version and includes
+`scope["extensions"]["gufi.transport"]` with `name` (`websocket` or
+`webtransport`), `method`, `scheme` and `http_version`. This is Gufi's message
+adaptation, not a standard ASGI WebTransport session API. WT clients exchange
+Link Text/Binary/Close records on their bidi streams. WebSocket subprotocol
+negotiation applies to WebSockets; datagrams and creating WT streams from
+Python are outside this adapter.
+
+The Link acknowledgment is internal `101`; the edge emits the appropriate
+H1/H2/H3 response. An ASGI refusal remains HTTP 403. Application completion
+ends the pending input read, while input FIN leaves accepted output free to
+drain. Protocol IO failures wake both directions. No drain deadline is added.
+
+`link_message_limit: 1048576` in `gufi.yaml` declares the maximum text/binary
+payload in bytes. The default is 1 MiB; zero is rejected. The CLI accepts
+`--link-message-limit BYTES`, and the Rust builder accepts
+`Runner::link_message_limit(NonZeroUsize)`. The limit is inherited by workers
+and checked in both directions; the inbound codec rejects oversized lengths
+before reserving payload storage. This setting affects Link sessions; the
+optional local listener retains its own WebSocket transport policy.
+
 ## Python environment
 
 gufi embeds CPython in the application process. Set `PYO3_PYTHON` to the

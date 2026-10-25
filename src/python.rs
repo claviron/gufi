@@ -128,6 +128,15 @@ impl Runner {
         self
     }
 
+    /// Bound each Link text/binary message in bytes; defaults to 1 MiB.
+    pub fn link_message_limit(
+        mut self,
+        bytes: std::num::NonZeroUsize,
+    ) -> Self {
+        self.launch.own.link_message_limit = Some(bytes);
+        self
+    }
+
     /// Also answer through this application's fleet, reached over shared
     /// memory. The fleet is named after the application, so the application
     /// name is the whole of the address.
@@ -366,13 +375,16 @@ impl Runner {
                 ));
                 let python = application.service();
                 let handle = python.handle_cell();
+                let message_limit = launch.own.link_message_limit
+                    .map(std::num::NonZeroUsize::get)
+                    .unwrap_or(crate::orbit::DEFAULT_MESSAGE_LIMIT);
                 #[cfg(feature = "websocket")]
                 let upgrades = crate::websocket::Upgrades::new(python.handle_cell());
                 // A WebSocket over Orbit that is not a broadcast session: the
                 // ASGI application's.
                 let owner = claviron::runner::Owner::new(python).orbit_sessions(
                     move |request, endpoint, handshake| {
-                        crate::orbit::session(request, endpoint, handshake, Arc::clone(&handle))
+                        crate::orbit::session(request, endpoint, handshake, Arc::clone(&handle), message_limit)
                     }
                 );
                 #[cfg(feature = "websocket")]

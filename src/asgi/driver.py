@@ -127,6 +127,14 @@ async def drive_websocket(application, socket, state, waiters):
         "server": socket.server,
         "subprotocols": subprotocols,
         "state": state.copy(),
+        "extensions": {
+            "gufi.transport": {
+                "name": socket.transport,
+                "method": socket.method,
+                "scheme": socket.scheme,
+                "http_version": socket.http_version,
+            }
+        },
     }
     connected = False
 
