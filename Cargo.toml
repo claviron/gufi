@@ -29,7 +29,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1.0" }
 serde_yaml = { version = "0.9" }
 toml_edit = { version = "0.25", default-features = false, features = ["parse"] }
-claviron = { version = "0.2.0-alpha.19", path = "../claviron", default-features = false, features = [
+claviron = { path = "../claviron", default-features = false, features = [
     "http",
     "runner",
     "supervisor",
