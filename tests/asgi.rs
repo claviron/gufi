@@ -294,3 +294,75 @@ async fn fixes_cancelled_final_send_preserves_terminal_failure() {
     assert!(matches!(rx.recv().await, Some(Err(Error::ResponseChannelClosed))));
     assert!(rx.recv().await.is_none());
 }
+
+#[tokio::test]
+async fn fixes_private_diagnostics_never_become_public_http_error_bodies() {
+    use http_body_util::BodyExt;
+    use std::future::{Future, poll_fn};
+    use std::task::Poll;
+    for malformed in [false, true] {
+        let (commands, doorbell) = commands().unwrap();
+        let handle = PythonApplicationHandle { commands };
+        let service = crate::routing::PythonService::new(Arc::new(
+            std::sync::RwLock::new(Some(handle)),
+        ));
+        let mut pending = std::pin::pin!(service.handle(http::Request::new(
+            http_body_util::Full::new(Bytes::new())
+        )));
+        poll_fn(|cx| {
+            assert!(pending.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        let ApplicationCommand::Http { response, .. } =
+            doorbell.queue.try_recv().unwrap()
+        else {
+            panic!("expected HTTP command")
+        };
+        let result = if malformed {
+            Ok(HttpResponse {
+                status: 200,
+                headers: vec![(
+                    b"invalid header".to_vec(),
+                    b"SYNTHETIC_PRIVATE_DETAIL".to_vec(),
+                )],
+                body: ResponseStream { first: None, rest: None, request: None },
+            })
+        } else {
+            Err(Error::InvalidHttpResponse(
+                "Traceback: SYNTHETIC_PRIVATE_DETAIL".into(),
+            ))
+        };
+        response.send(result).unwrap();
+        let response = pending.await;
+        assert_eq!(response.status(), http::StatusCode::INTERNAL_SERVER_ERROR);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "Internal Server Error");
+    }
+}
+
+#[tokio::test]
+async fn fixes_post_head_diagnostic_is_an_error_not_response_content() {
+    use http_body_util::BodyExt;
+    let (exchange, _received) = fixes_exchange();
+    let (tx, rx) = chunks::channel(2);
+    let terminal = tx.clone().try_reserve_owned().unwrap();
+    tx.try_send(Ok(Bytes::from_static(b"public data"))).unwrap();
+    {
+        let mut state = exchange.response.lock().unwrap();
+        state.sender.take();
+        state.status = Some(200);
+        state.rest = Some(tx);
+        state.terminal = Some(terminal);
+    }
+    let mut body =
+        ResponseStream { first: None, rest: Some(rx), request: None };
+    exchange.fail("SYNTHETIC_PRIVATE_DETAIL".into());
+    assert_eq!(
+        body.frame().await.unwrap().unwrap().into_data().unwrap(),
+        "public data"
+    );
+    let error = body.frame().await.unwrap().unwrap_err();
+    assert!(error.to_string().contains("SYNTHETIC_PRIVATE_DETAIL"));
+    assert!(body.frame().await.is_none());
+}

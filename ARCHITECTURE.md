@@ -414,3 +414,9 @@ Successful final sends release it only after their data send completes; a
 cancelled backpressured final send publishes failure through RAII. Finite
 single-part responses do not allocate this channel or reservation. No new lock,
 polling interval, separate watcher or unbounded buffer is introduced.
+
+Internal HTTP failures return the stable public body `Internal Server Error`.
+Pre-head diagnostics are logged at the service boundary; the ASGI failure hook
+also retains traceback diagnostics at debug level. After headers, failures stay
+body errors rather than appended response data. No debug-response policy is
+implicitly enabled, and successful dispatch adds no diagnostic formatting.

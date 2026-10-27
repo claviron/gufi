@@ -172,17 +172,21 @@ where
             response.headers,
             response.body.map_err(BoxError::from).boxed_unsync(),
         )
-        .unwrap_or_else(|message| {
-            text_response(StatusCode::INTERNAL_SERVER_ERROR, message.to_owned())
-        }),
+        .unwrap_or_else(internal_error),
         Err(crate::asgi::Error::ApplicationStopped) => text_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "Python application is stopped".to_owned(),
         ),
-        Err(error) => {
-            text_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
-        }
+        Err(error) => internal_error(error),
     }
+}
+
+fn internal_error(error: impl std::fmt::Display) -> AppResponse {
+    tracing::error!(%error, "Python HTTP request failed");
+    text_response(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Internal Server Error".to_owned(),
+    )
 }
 
 /// The ASGI scope of a request, HTTP or WebSocket alike. Where it came from is

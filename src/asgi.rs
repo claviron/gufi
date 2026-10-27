@@ -1205,6 +1205,7 @@ impl HttpExchange {
         &self,
         message: String,
     ) {
+        tracing::debug!(%message, "ASGI HTTP application failed");
         let mut response = self.response.lock().unwrap();
         response.complete = true;
         if let Some(sender) = response.sender.take() {
