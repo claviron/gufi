@@ -233,12 +233,14 @@ fn response_from_asgi(
     let mut response = Response::new(body);
     *response.status_mut() = status;
     for (name, value) in headers {
-        let (Ok(name), Ok(value)) = (
-            http::HeaderName::from_bytes(&name),
-            http::HeaderValue::from_bytes(&value),
-        ) else {
-            return Err("invalid ASGI response header");
-        };
+        let name = http::HeaderName::from_bytes(&name)
+            .map_err(|_| "invalid ASGI response header")?;
+        // ASGI delegates transfer framing to the selected HTTP transport.
+        if name == http::header::TRANSFER_ENCODING {
+            continue;
+        }
+        let value = http::HeaderValue::from_bytes(&value)
+            .map_err(|_| "invalid ASGI response header")?;
         response.headers_mut().append(name, value);
     }
     Ok(response)

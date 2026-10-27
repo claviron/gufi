@@ -427,3 +427,8 @@ sends, WebSocket handshake/close delivery and asynchronous sends that waited
 for room. Normal nonempty sends use the existing channel result rather than an
 additional closed-state read. Request `http.disconnect` delivery and successful
 HTTP FIN semantics remain independent of send error propagation.
+
+ASGI response conversion ignores application `Transfer-Encoding` after parsing
+its case-insensitive name and before parsing its value. The ingress owns transfer
+framing. Content-Encoding and repeated application headers (including Set-Cookie)
+retain their existing handling and validation.
