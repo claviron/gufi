@@ -366,3 +366,142 @@ async fn fixes_post_head_diagnostic_is_an_error_not_response_content() {
     assert!(error.to_string().contains("SYNTHETIC_PRIVATE_DETAIL"));
     assert!(body.frame().await.is_none());
 }
+
+fn fixes_assert_disconnected(error: PyErr) {
+    Python::attach(|py| {
+        assert!(error.is_instance_of::<pyo3::exceptions::PyOSError>(py))
+    });
+}
+
+#[test]
+fn fixes_disconnect_http_send_before_head_and_after_body_reader_departure() {
+    Python::initialize();
+    for more in [false, true] {
+        let (exchange, received) = fixes_exchange();
+        drop(received);
+        exchange.response_start(200, vec![]).unwrap();
+        let error = Python::attach(|py| {
+            exchange.response_body(py, b"first".to_vec(), more).unwrap_err()
+        });
+        fixes_assert_disconnected(error);
+        assert!(exchange.response.lock().unwrap().terminal.is_none());
+        for data in [vec![], b"later".to_vec()] {
+            let (exchange, mut received) = fixes_exchange();
+            exchange.response_start(200, vec![]).unwrap();
+            Python::attach(|py| {
+                assert!(
+                    exchange
+                        .response_body(py, b"first".to_vec(), true)
+                        .unwrap()
+                        .is_none()
+                );
+            });
+            drop(received.try_recv().unwrap().unwrap());
+            let error = Python::attach(|py| {
+                exchange.response_body(py, data, more).unwrap_err()
+            });
+            fixes_assert_disconnected(error);
+        }
+    }
+}
+
+#[tokio::test]
+async fn fixes_disconnect_waiting_sends_propagate_closed_channels() {
+    use std::future::{Future, poll_fn};
+    use std::task::Poll;
+    Python::initialize();
+    async fn check<T>(
+        first: T,
+        next: T,
+    ) {
+        let (tx, rx) = chunks::channel(1);
+        assert!(tx.try_send(first).is_ok());
+        let mut pending = std::pin::pin!(send_to_client(tx, next));
+        poll_fn(|cx| {
+            assert!(pending.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        drop(rx);
+        fixes_assert_disconnected(pending.await.unwrap_err());
+    }
+    check(Ok::<_, Error>(Bytes::new()), Ok(Bytes::from_static(b"later"))).await;
+    check(Message::Text("first".into()), Message::Binary(vec![1])).await;
+    let (tx, mut rx) = chunks::channel(1);
+    send_to_client(tx, "control").await.unwrap();
+    assert_eq!(rx.recv().await, Some("control"));
+}
+
+#[test]
+fn fixes_disconnect_websocket_send_and_handshake_report_oserror() {
+    Python::initialize();
+    let fixture = || {
+        let (decision, decided) = oneshot::channel();
+        let (outbound, received) = chunks::channel(1);
+        let exchange = WebSocketExchange::new(
+            fixes_request(),
+            WebSocketEnds {
+                id: 200,
+                transport: MessageTransport::WebSocket,
+                decision,
+                inbound: Arc::new(Inbound::default()),
+                outbound,
+            },
+        );
+        (exchange, decided, received)
+    };
+    let (exchange, decided, received) = fixture();
+    drop(decided);
+    fixes_assert_disconnected(exchange.accept(None, vec![]).unwrap_err());
+    drop(received);
+    fixes_assert_disconnected(Python::attach(|py| {
+        exchange.send(py, Some("later".into()), None).unwrap_err()
+    }));
+    exchange.outbound.lock().unwrap().take();
+    fixes_assert_disconnected(Python::attach(|py| {
+        exchange.send(py, None, Some(vec![1])).unwrap_err()
+    }));
+    let (exchange, decided, _received) = fixture();
+    drop(decided);
+    fixes_assert_disconnected(Python::attach(|py| {
+        exchange.close(py, 1000, String::new()).unwrap_err()
+    }));
+}
+
+#[tokio::test]
+async fn fixes_disconnect_controls_preserve_successful_http_fin() {
+    use http_body_util::BodyExt;
+    Python::initialize();
+    for streaming in [false, true] {
+        for tail in [vec![], b"tail".to_vec()] {
+            let (exchange, received) = fixes_exchange();
+            exchange.response_start(200, vec![]).unwrap();
+            Python::attach(|py| {
+                assert!(
+                    exchange
+                        .response_body(py, b"first".to_vec(), streaming)
+                        .unwrap()
+                        .is_none()
+                );
+            });
+            let response = received.await.unwrap().unwrap();
+            let expected = if streaming {
+                Python::attach(|py| {
+                    assert!(
+                        exchange
+                            .response_body(py, tail.clone(), false)
+                            .unwrap()
+                            .is_none()
+                    );
+                });
+                [b"first".as_slice(), tail.as_slice()].concat()
+            } else {
+                b"first".to_vec()
+            };
+            assert_eq!(
+                response.body.collect().await.unwrap().to_bytes(),
+                expected
+            );
+        }
+    }
+}

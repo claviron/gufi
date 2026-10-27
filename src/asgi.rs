@@ -957,6 +957,19 @@ struct HttpResponseState {
     complete: bool,
 }
 
+fn client_disconnected() -> PyErr {
+    pyo3::exceptions::PyBrokenPipeError::new_err(
+        "the response consumer disconnected",
+    )
+}
+
+async fn send_to_client<T>(
+    sender: chunks::Sender<T>,
+    part: T,
+) -> PyResult<()> {
+    sender.send(part).await.map_err(|_| client_disconnected())
+}
+
 // A cancelled backpressured final send must not turn into successful EOF.
 struct PendingResponseEnd(Option<chunks::OwnedPermit<Result<Bytes>>>);
 
@@ -1158,7 +1171,7 @@ impl HttpExchange {
                 None
             };
             let first = (!part.is_empty()).then_some(part);
-            let _ = sender.send(Ok(HttpResponse {
+            let sent = sender.send(Ok(HttpResponse {
                 status,
                 headers: std::mem::take(&mut response.headers),
                 body: ResponseStream {
@@ -1167,6 +1180,11 @@ impl HttpExchange {
                     request: Some(self.body.clone()),
                 },
             }));
+            if sent.is_err() {
+                response.rest.take();
+                response.terminal.take();
+                return Err(client_disconnected());
+            }
             return Ok(None);
         }
 
@@ -1179,21 +1197,24 @@ impl HttpExchange {
             response.rest.take()
         };
         drop(response);
-        let Some(tx) = tx else { return Ok(None) };
+        let Some(tx) = tx else { return Err(client_disconnected()) };
         if part.is_empty() {
-            return Ok(None);
+            return if tx.is_closed() {
+                Err(client_disconnected())
+            } else {
+                Ok(None)
+            };
         }
         match tx.try_send(Ok(part)) {
             Ok(()) => Ok(None),
-            // The reader is gone — the client left. Nothing to wait for.
-            Err(chunks::error::TrySendError::Closed(_)) => Ok(None),
+            Err(chunks::error::TrySendError::Closed(_)) => {
+                Err(client_disconnected())
+            }
             Err(chunks::error::TrySendError::Full(part)) => {
                 let mut terminal = PendingResponseEnd(terminal);
                 pyo3_async_runtimes::tokio::future_into_py(py, async move {
-                    let sent = tx.send(part).await;
-                    if sent.is_ok() {
-                        terminal.0.take();
-                    }
+                    send_to_client(tx, part).await?;
+                    terminal.0.take();
                     Ok(())
                 })
                 .map(Some)
@@ -1363,8 +1384,9 @@ impl WebSocketExchange {
                 subprotocol.into_bytes(),
             ));
         }
-        let _ = decision.send(WebSocketDecision::Accept { headers });
-        Ok(())
+        decision
+            .send(WebSocketDecision::Accept { headers })
+            .map_err(|_| client_disconnected())
     }
 
     /// The next `websocket.receive`, or `websocket.disconnect` once the client
@@ -1427,14 +1449,16 @@ impl WebSocketExchange {
             (None, None) => return Ok(None),
         };
         let Some(outbound) = self.outbound.lock().unwrap().clone() else {
-            return Ok(None);
+            return Err(client_disconnected());
         };
         match outbound.try_send(message) {
-            Ok(()) | Err(chunks::error::TrySendError::Closed(_)) => Ok(None),
+            Ok(()) => Ok(None),
+            Err(chunks::error::TrySendError::Closed(_)) => {
+                Err(client_disconnected())
+            }
             Err(chunks::error::TrySendError::Full(message)) => {
                 pyo3_async_runtimes::tokio::future_into_py(py, async move {
-                    let _ = outbound.send(message).await;
-                    Ok(())
+                    send_to_client(outbound, message).await
                 })
                 .map(Some)
             }
@@ -1450,15 +1474,16 @@ impl WebSocketExchange {
         reason: String,
     ) -> PyResult<Option<Bound<'py, PyAny>>> {
         if let Some(decision) = self.decision.lock().unwrap().take() {
-            let _ = decision.send(WebSocketDecision::Reject);
+            decision
+                .send(WebSocketDecision::Reject)
+                .map_err(|_| client_disconnected())?;
             return Ok(None);
         }
         let Some(outbound) = self.outbound.lock().unwrap().take() else {
-            return Ok(None);
+            return Err(client_disconnected());
         };
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let _ = outbound.send(Message::Close { code, reason }).await;
-            Ok(())
+            send_to_client(outbound, Message::Close { code, reason }).await
         })
         .map(Some)
     }

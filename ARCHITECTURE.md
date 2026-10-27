@@ -420,3 +420,10 @@ Pre-head diagnostics are logged at the service boundary; the ASGI failure hook
 also retains traceback diagnostics at debug level. After headers, failures stay
 body errors rather than appended response data. No debug-response policy is
 implicitly enabled, and successful dispatch adds no diagnostic formatting.
+
+Closed HTTP/WebSocket output channels raise Python `BrokenPipeError` (an
+`OSError` subclass), including failed initial HTTP head delivery, empty HTTP
+sends, WebSocket handshake/close delivery and asynchronous sends that waited
+for room. Normal nonempty sends use the existing channel result rather than an
+additional closed-state read. Request `http.disconnect` delivery and successful
+HTTP FIN semantics remain independent of send error propagation.
