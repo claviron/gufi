@@ -98,9 +98,6 @@ core.*
 *.md
 *.pdf
 !README.md
-!AGENTS.md
-!CLAUDE.md
 !SKILL.md
-!ARCHITECTURE.md
 !CONTRIBUTING.md
-!/docs/Python-3.15.md
+!/docs/*.md
