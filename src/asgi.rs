@@ -111,8 +111,13 @@ impl http_body::Body for ResponseStream {
         }
         let Some(rest) = self.rest.as_mut() else { return Poll::Ready(None) };
         match rest.poll_recv(cx) {
-            Poll::Ready(Some(part)) => {
-                Poll::Ready(Some(part.map(http_body::Frame::data)))
+            Poll::Ready(Some(Ok(part))) => {
+                Poll::Ready(Some(Ok(http_body::Frame::data(part))))
+            }
+            Poll::Ready(Some(Err(error))) => {
+                // Terminal failure also wakes/rejects any outstanding producer.
+                self.rest = None;
+                Poll::Ready(Some(Err(error)))
             }
             Poll::Ready(None) => {
                 self.rest = None;
@@ -947,7 +952,20 @@ struct HttpResponseState {
     headers: Vec<(Vec<u8>, Vec<u8>)>,
     /// After it, while `more_body` is true: where the rest goes.
     rest: Option<chunks::Sender<Result<Bytes>>>,
+    // Reserved once when streaming starts; failure never competes with data.
+    terminal: Option<chunks::OwnedPermit<Result<Bytes>>>,
     complete: bool,
+}
+
+// A cancelled backpressured final send must not turn into successful EOF.
+struct PendingResponseEnd(Option<chunks::OwnedPermit<Result<Bytes>>>);
+
+impl Drop for PendingResponseEnd {
+    fn drop(&mut self) {
+        if let Some(terminal) = self.0.take() {
+            drop(terminal.send(Err(Error::ResponseChannelClosed)));
+        }
+    }
 }
 
 impl HttpExchange {
@@ -964,6 +982,7 @@ impl HttpExchange {
                 status: None,
                 headers: Vec::new(),
                 rest: None,
+                terminal: None,
                 complete: false,
             }),
         }
@@ -1127,7 +1146,12 @@ impl HttpExchange {
                 // One part in flight: the reader takes it before the next is
                 // accepted. Any more would be memory the client has not asked
                 // to spend.
-                let (tx, rx) = chunks::channel(1);
+                // One data slot and one permanently reserved failure slot.
+                let (tx, rx) = chunks::channel(2);
+                response.terminal =
+                    Some(tx.clone().try_reserve_owned().expect(
+                        "new response channel has room for its terminal slot",
+                    ));
                 response.rest = Some(tx);
                 Some(rx)
             } else {
@@ -1146,7 +1170,9 @@ impl HttpExchange {
             return Ok(None);
         }
 
-        // A later part: to the stream the first one opened.
+        // A later part: to the stream the first one opened. Keep the terminal
+        // reservation until the final data send ends, preserving backpressure.
+        let terminal = if more_body { None } else { response.terminal.take() };
         let tx = if more_body {
             response.rest.clone()
         } else {
@@ -1162,8 +1188,12 @@ impl HttpExchange {
             // The reader is gone — the client left. Nothing to wait for.
             Err(chunks::error::TrySendError::Closed(_)) => Ok(None),
             Err(chunks::error::TrySendError::Full(part)) => {
+                let mut terminal = PendingResponseEnd(terminal);
                 pyo3_async_runtimes::tokio::future_into_py(py, async move {
-                    let _ = tx.send(part).await;
+                    let sent = tx.send(part).await;
+                    if sent.is_ok() {
+                        terminal.0.take();
+                    }
                     Ok(())
                 })
                 .map(Some)
@@ -1179,8 +1209,9 @@ impl HttpExchange {
         response.complete = true;
         if let Some(sender) = response.sender.take() {
             let _ = sender.send(Err(Error::InvalidHttpResponse(message)));
-        } else if let Some(rest) = response.rest.take() {
-            let _ = rest.try_send(Err(Error::InvalidHttpResponse(message)));
+        } else if let Some(terminal) = response.terminal.take() {
+            response.rest.take();
+            drop(terminal.send(Err(Error::InvalidHttpResponse(message))));
         }
     }
 }
@@ -1195,9 +1226,10 @@ impl Drop for HttpExchange {
         if let Some(sender) = response.sender.take() {
             let _ = sender.send(Err(Error::ResponseChannelClosed));
         } else if !response.complete
-            && let Some(rest) = response.rest.take()
+            && let Some(terminal) = response.terminal.take()
         {
-            let _ = rest.try_send(Err(Error::ResponseChannelClosed));
+            response.rest.take();
+            drop(terminal.send(Err(Error::ResponseChannelClosed)));
         }
     }
 }
@@ -1592,8 +1624,8 @@ fn install_gufi_module(
     if nothing {
         return Ok(());
     }
-    let module = PyModule::new(py, "gufi")
-        .map_err(|error| python_error(py, error))?;
+    let module =
+        PyModule::new(py, "gufi").map_err(|error| python_error(py, error))?;
     if let Some(router) = router {
         let bridge = Py::new(py, PythonInvocationBridge { router })
             .map_err(|error| python_error(py, error))?;

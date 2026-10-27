@@ -190,3 +190,107 @@ async fn a_request_body_streams_and_disconnect_waits_for_the_reply() {
     assert_eq!(body.as_ref(), b"first|second;waiting");
     running.shutdown().unwrap();
 }
+
+fn fixes_request() -> HttpRequest {
+    HttpRequest {
+        method: "GET".into(),
+        scheme: "http".into(),
+        http_version: "1.1".into(),
+        path: "/".into(),
+        raw_path: b"/".to_vec(),
+        query_string: vec![],
+        headers: vec![],
+        client: None,
+        server: None,
+    }
+}
+
+fn fixes_exchange() -> (HttpExchange, oneshot::Receiver<Result<HttpResponse>>) {
+    let (commands, _doorbell) = commands().unwrap();
+    let feed = BodyFeed {
+        id: 100,
+        shared: Arc::new(BodyInbound::default()),
+        commands,
+    };
+    let (response, received) = oneshot::channel();
+    (HttpExchange::new(fixes_request(), feed, response), received)
+}
+
+#[tokio::test]
+async fn fixes_stream_terminal_survives_data_pressure_and_exchange_drop() {
+    use http_body_util::BodyExt;
+    for full in [false, true] {
+        for explicit in [false, true] {
+            let (exchange, _received) = fixes_exchange();
+            let (tx, rx) = chunks::channel(2);
+            let terminal = tx.clone().try_reserve_owned().unwrap();
+            if full {
+                tx.try_send(Ok(Bytes::from_static(b"partial"))).unwrap();
+                assert!(matches!(
+                    tx.try_send(Ok(Bytes::new())),
+                    Err(chunks::error::TrySendError::Full(_))
+                ));
+            }
+            let retained_sender = tx.clone();
+            {
+                let mut state = exchange.response.lock().unwrap();
+                state.sender.take();
+                state.status = Some(200);
+                state.rest = Some(tx);
+                state.terminal = Some(terminal);
+            }
+            let mut body =
+                ResponseStream { first: None, rest: Some(rx), request: None };
+            if explicit {
+                exchange.fail("synthetic stream failure".into());
+            }
+            drop(exchange);
+            if full {
+                assert_eq!(
+                    body.frame().await.unwrap().unwrap().into_data().unwrap(),
+                    "partial"
+                );
+            }
+            let error = body.frame().await.unwrap().unwrap_err();
+            if explicit {
+                assert!(matches!(error, Error::InvalidHttpResponse(_)));
+            } else {
+                assert!(matches!(error, Error::ResponseChannelClosed));
+            }
+            assert!(http_body::Body::is_end_stream(&body));
+            assert!(retained_sender.is_closed());
+            assert!(body.frame().await.is_none());
+        }
+    }
+}
+
+#[test]
+fn fixes_stream_failure_tolerates_a_departed_reader() {
+    let (exchange, _received) = fixes_exchange();
+    let (tx, rx) = chunks::channel(2);
+    let terminal = tx.clone().try_reserve_owned().unwrap();
+    {
+        let mut state = exchange.response.lock().unwrap();
+        state.sender.take();
+        state.status = Some(200);
+        state.rest = Some(tx);
+        state.terminal = Some(terminal);
+    }
+    drop(rx);
+    exchange.fail("synthetic departed stream".into());
+    assert!(exchange.response.lock().unwrap().rest.is_none());
+    drop(exchange);
+}
+
+#[tokio::test]
+async fn fixes_cancelled_final_send_preserves_terminal_failure() {
+    let (tx, mut rx) = chunks::channel(2);
+    let terminal =
+        PendingResponseEnd(Some(tx.clone().try_reserve_owned().unwrap()));
+    tx.try_send(Ok(Bytes::from_static(b"partial"))).unwrap();
+    drop(terminal);
+    drop(tx);
+    assert!(rx.recv().await.unwrap().is_ok());
+    assert!(matches!(rx.recv().await, Some(Err(Error::ResponseChannelClosed))));
+    assert!(rx.recv().await.is_none());
+}

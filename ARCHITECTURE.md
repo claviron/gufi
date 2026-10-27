@@ -402,3 +402,15 @@ offers an embedded mode and its own maintainer recommends daemon mode —
 separate processes — for these reasons. The servers that do embed Python
 (uWSGI, Granian, Robyn) are Python servers: they are the process at the end of
 the hop, not the edge in front of it.
+
+
+## Streaming response terminal ownership
+
+A streaming HTTP response uses a bounded channel with one data slot and one
+reserved terminal slot. The reservation is acquired once at stream creation;
+normal chunks use the existing try-send/backpressure path. Explicit failure and
+premature exchange Drop consume the reserved slot, independent of queue pressure.
+Successful final sends release it only after their data send completes; a
+cancelled backpressured final send publishes failure through RAII. Finite
+single-part responses do not allocate this channel or reservation. No new lock,
+polling interval, separate watcher or unbounded buffer is introduced.
