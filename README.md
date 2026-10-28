@@ -22,8 +22,7 @@ public paths. Application build scripts also keep using
 `DEP_GUFI_PYTHON_LIB_DIR`; the runner forwards it from the engine. Python code
 continues to import `gufi`.
 
-The new engine package is available in this source workspace and has not yet
-been published independently. It can be embedded by a host that owns its own
+The engine package can be embedded by a host that owns its own
 routing and lifecycle, without the Gufi runner or its ingress. Its base
 dependencies do not select Claviron's runner or supervisor.
 
@@ -53,7 +52,7 @@ you already have.
 
 ```toml
 [dependencies]
-gufi     = "0.2.0-alpha.23"
+gufi     = "0.2.0-alpha.24"
 tokio    = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 axum     = "0.8"   # or warp, or nothing — see "Your router stays yours"
 ```

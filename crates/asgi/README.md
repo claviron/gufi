@@ -4,8 +4,13 @@ Embeddable CPython and ASGI execution for Rust hosts. This package owns PyO3,
 the interpreter boundary, ASGI lifespan and streaming HTTP/message execution.
 It does not start a Gufi runner, HTTP listener or process supervisor.
 
-This package is new in the source workspace and is not yet published
-independently. The `gufi` runner uses it and preserves its existing public API.
+The `gufi` runner uses this engine and preserves its existing public API.
+Hosts that own routing and lifecycle can depend on the engine directly:
+
+```toml
+[dependencies]
+gufi-asgi = "0.2.0-alpha.24"
+```
 
 ## Ownership
 
