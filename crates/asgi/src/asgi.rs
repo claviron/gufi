@@ -246,11 +246,13 @@ impl PythonApplication {
     /// Django Channels' layer over the broadcast service's groups, as
     /// `gufi.channels.OrbitChannelLayer`.
     #[cfg(feature = "django")]
-    pub(crate) fn channels(
+    pub fn channels(
         mut self,
-        layer: crate::django::channels::ChannelLayer,
+        groups: claviron::broadcast::GroupLayer,
+        settings: &crate::config::Channels,
     ) -> Self {
-        self.channels = Some(layer);
+        self.channels =
+            Some(crate::django::channels::ChannelLayer::new(groups, settings));
         self
     }
 
@@ -312,7 +314,8 @@ pub struct RunningPythonApplication {
 }
 
 impl RunningPythonApplication {
-    pub(crate) fn is_finished(&self) -> bool {
+    /// Whether the owned application-loop thread has returned.
+    pub fn is_finished(&self) -> bool {
         self.handle.as_ref().is_none_or(JoinHandle::is_finished)
     }
 

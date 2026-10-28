@@ -8,6 +8,25 @@ gufi runs Python ASGI applications inside a Rust binary you build and own.
 Your Python framework handles the application; gufi connects it to Claviron's
 runtime and manages ASGI lifespan, requests and shutdown.
 
+## Workspace
+
+The workspace contains two Rust packages:
+
+| Package | Responsibility |
+| --- | --- |
+| `gufi` | Application runner, launch configuration, lifecycle registration and HTTP/Orbit ingress. |
+| [`gufi-asgi`](crates/asgi/README.md) | CPython/PyO3, ASGI lifespan, streaming HTTP/message execution and the native Python module. |
+
+`gufi::Runner`, `gufi::asgi` and the existing HTTP service types retain their
+public paths. Application build scripts also keep using
+`DEP_GUFI_PYTHON_LIB_DIR`; the runner forwards it from the engine. Python code
+continues to import `gufi`.
+
+The new engine package is available in this source workspace and has not yet
+been published independently. It can be embedded by a host that owns its own
+routing and lifecycle, without the Gufi runner or its ingress. Its base
+dependencies do not select Claviron's runner or supervisor.
+
 ## Write your own runner
 
 Your `main.rs` assembles the host, registers application services and starts
@@ -176,10 +195,9 @@ files or supervision — and its numbers are not performance evidence.
 
 In production a Claviron edge terminates TLS, routes vhosts and serves static
 files, and reaches this process by name over Orbit shared memory instead of a
-socket. That is the shape every Python deployment already has — nginx in front
-of gunicorn, Apache's `WSGIDaemonProcess`. What differs is the cost of the hop,
-not the topology. See `ARCHITECTURE.md`, including why the interpreter is not
-inside the edge instead.
+socket. This is the runner's deployment topology. Hosts embedding `gufi-asgi`
+directly own their ingress and application lifetime, within the engine's
+process-wide interpreter and environment constraints.
 
 ## Orbit Link management
 

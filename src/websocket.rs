@@ -23,16 +23,18 @@ use crate::asgi::{
 };
 use crate::routing::{AppRequest, AppResponse, full_body};
 
-impl Deliver for WebSocketInbound {
+struct Inbound(WebSocketInbound);
+
+impl Deliver for Inbound {
     fn deliver(
         &self,
         message: Message,
     ) -> impl Future<Output = bool> + Send {
-        WebSocketInbound::deliver(self, message)
+        self.0.deliver(message)
     }
 
     fn end(&self) {
-        WebSocketInbound::end(self);
+        self.0.end();
     }
 }
 
@@ -93,7 +95,7 @@ impl tower_service::Service<AppRequest> for Upgrades {
             Ok(accept(
                 Request::from_parts(parts, body),
                 headers,
-                inbound,
+                Inbound(inbound),
                 outbound,
             ))
         })

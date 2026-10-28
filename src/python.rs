@@ -374,12 +374,12 @@ impl Runner {
                     launch.own.broadcasting.clone().unwrap_or_default()
                 ));
                 let python = application.service();
-                let handle = python.handle_cell();
+                let handle = application.handle_cell();
                 let message_limit = launch.own.link_message_limit
                     .map(std::num::NonZeroUsize::get)
                     .unwrap_or(crate::orbit::DEFAULT_MESSAGE_LIMIT);
                 #[cfg(feature = "websocket")]
-                let upgrades = crate::websocket::Upgrades::new(python.handle_cell());
+                let upgrades = crate::websocket::Upgrades::new(Arc::clone(&handle));
                 // A WebSocket over Orbit that is not a broadcast session: the
                 // ASGI application's.
                 let owner = claviron::runner::Owner::new(python).orbit_sessions(

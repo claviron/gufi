@@ -1,7 +1,8 @@
 # Python 3.15 integration
 
 Scope: CPython 3.15.x only. No older-interpreter compatibility path is retained.
-This is a runner change, not a new Python runtime inside the Claviron edge.
+Python execution belongs to the workspace's `gufi-asgi` engine. The `gufi`
+runner uses that engine and keeps its existing launch and link-metadata API.
 
 ## Interpreter ownership and builds
 
@@ -43,7 +44,7 @@ Primary source: [What's new in Python 3.15](https://docs.python.org/3.15/whatsne
   `.pth`/`.start` files with its own StartupState ordering. Gufi no longer calls
   addsitedir again at every lifespan start. An ASGI restart is not interpreter
   reinitialization or a request to repeat package startup hooks.
-- **PEP 810 lazy imports:** the shipped `src/asgi/driver.py` lazily imports
+- **PEP 810 lazy imports:** the shipped `crates/asgi/src/asgi/driver.py` lazily imports
   traceback, used only for error formatting. The configured ASGI target and
   lifespan startup remain eager: import errors must still prevent readiness.
   No global import-mode override delays application failures into requests.
@@ -113,15 +114,18 @@ no profiler loop, polling cadence or automatic process attachment.
 ## Verification boundary
 
 - Python 3.15 syntax parsing of shipped Python and existing fixtures.
-- `python3.15 -B tests/python/test_asgi_driver.py`: isolated HTTP scope/state,
+- `python3.15 -B crates/asgi/tests/python/test_asgi_driver.py`: isolated HTTP scope/state,
   streaming and lazy traceback checks, concurrent HTTP/WebSocket failure
   isolation, post-stop receive readiness, graceful drain ordering, failed or
   absent lifespan cleanup and explicit cancellation cleanup; no Claviron boot.
-  Eleven tests passed on macOS with CPython 3.15.0. They use local descriptor
+  Twelve tests passed on macOS with CPython 3.15.2. They use local descriptor
   pairs and explicit event signals, not sleeps, a service or an HTTP listener.
+- `python3.15 -B crates/asgi/tests/python/test_native_module.py`: two native
+  module compatibility checks passed.
 - Shell syntax check of the installer and static diff checks.
 - `rust-check.sh`: the workspace/all-features Rust suite passed on macOS with
-  CPython 3.15.0 and PyO3 0.30.1 (19 tests; one documentation example ignored).
+  CPython 3.15.2 and PyO3 0.30.1 (18 runner tests and 17 engine tests; one
+  documentation example ignored).
   This includes version-metadata rejection, embedded lifespan, HTTP dispatch,
   streaming and shutdown-admission behavior. The Python driver tests above
   exercise sibling isolation and explicit cancellation separately.

@@ -1,12 +1,8 @@
-//! Claviron's broadcast service in a Python application's process.
+//! Python publishing to a host-supplied Claviron broadcast service.
 //!
-//! Two things, both thin: `gufi.broadcast(...)`, which publishes from
-//! Python straight into the service in this process — the round trip a
-//! Pusher client library makes over HTTP to a remote server is not needed
-//! when the server is here — and the acceptance of a Pusher WebSocket that
-//! arrives over Orbit, which runs as a broadcast session rather than reaching
-//! the ASGI application. The protocol, the channels and the sessions are
-//! Claviron's.
+//! `gufi.broadcast(...)` publishes directly into the service in this process.
+//! The host owns subscriber sessions and transport; Claviron owns the protocol
+//! and channel delivery.
 
 use std::sync::Arc;
 

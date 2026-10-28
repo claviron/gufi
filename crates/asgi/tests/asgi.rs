@@ -375,7 +375,7 @@ fn fixes_assert_disconnected(error: PyErr) {
 
 #[test]
 fn fixes_disconnect_http_send_before_head_and_after_body_reader_departure() {
-    Python::initialize();
+    initialize_interpreter(None).unwrap();
     for more in [false, true] {
         let (exchange, received) = fixes_exchange();
         drop(received);
@@ -409,7 +409,7 @@ fn fixes_disconnect_http_send_before_head_and_after_body_reader_departure() {
 async fn fixes_disconnect_waiting_sends_propagate_closed_channels() {
     use std::future::{Future, poll_fn};
     use std::task::Poll;
-    Python::initialize();
+    initialize_interpreter(None).unwrap();
     async fn check<T>(
         first: T,
         next: T,
@@ -434,7 +434,7 @@ async fn fixes_disconnect_waiting_sends_propagate_closed_channels() {
 
 #[test]
 fn fixes_disconnect_websocket_send_and_handshake_report_oserror() {
-    Python::initialize();
+    initialize_interpreter(None).unwrap();
     let fixture = || {
         let (decision, decided) = oneshot::channel();
         let (outbound, received) = chunks::channel(1);
@@ -471,7 +471,7 @@ fn fixes_disconnect_websocket_send_and_handshake_report_oserror() {
 #[tokio::test]
 async fn fixes_disconnect_controls_preserve_successful_http_fin() {
     use http_body_util::BodyExt;
-    Python::initialize();
+    initialize_interpreter(None).unwrap();
     for streaming in [false, true] {
         for tail in [vec![], b"tail".to_vec()] {
             let (exchange, received) = fixes_exchange();

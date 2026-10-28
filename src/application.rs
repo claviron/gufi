@@ -65,6 +65,12 @@ impl PythonApplicationService {
     pub(crate) fn service(&self) -> PythonService {
         PythonService::new(Arc::clone(&self.handle))
     }
+
+    pub(crate) fn handle_cell(
+        &self
+    ) -> Arc<RwLock<Option<PythonApplicationHandle>>> {
+        Arc::clone(&self.handle)
+    }
 }
 
 #[async_trait]
@@ -158,12 +164,7 @@ impl Bootable<AppState, <Self as Component<AppState>>::Deps>
             }
             #[cfg(feature = "django")]
             if let Some(settings) = &self.broadcasting.channels {
-                application = application.channels(
-                    crate::django::channels::ChannelLayer::new(
-                        service.groups(),
-                        settings,
-                    ),
-                );
+                application = application.channels(service.groups(), settings);
             }
         }
 

@@ -21,7 +21,7 @@ use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
-use crate::options::Channels;
+use crate::config::Channels;
 
 /// The Python layer, a file of its own so tools that read Python can.
 pub(crate) const MODULE_SOURCE: &str = include_str!("channels.py");

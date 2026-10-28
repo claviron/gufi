@@ -1,12 +1,12 @@
 [package]
 autotests = false
 name = "gufi"
-version = "0.2.0-alpha.23"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "Python runner for Claviron runtime"
 publish = true
-license = "MIT"
-repository = "https://github.com/claviron/gufi"
+license.workspace = true
+repository.workspace = true
 homepage = "https://github.com/claviron"
 documentation = "https://docs.rs/gufi"
 keywords = ["python", "asgi", "claviron", "runtime", "websocket"]
@@ -16,6 +16,19 @@ include = ["/src/**", "/stubs/**", "/assets/gufi.svg", "/build.rs", "/Cargo.toml
 # `DEP_GUFI_PYTHON_LIB_DIR`; see `build.rs`.
 links = "gufi"
 
+[workspace]
+members = ["crates/asgi"]
+resolver = "3"
+
+[workspace.package]
+version = "0.2.0-alpha.23"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/claviron/gufi"
+
+[workspace.dependencies]
+claviron = { version = "0.2.0-alpha.23", path = "../claviron", default-features = false }
+
 # Gufi compiles a Python application's own binary against Claviron. It
 # reaches Claviron the way any consumer does — through the root facade, never
 # its internal crates — which is why it lives beside Claviron, not inside it.
@@ -23,22 +36,18 @@ links = "gufi"
 bytes = { version = "1.11" }
 clap = { version = "4", features = ["derive"], optional = true }
 async-trait = { version = "0.1" }
-pyo3 = { version = "0.30.1" }
-pyo3-async-runtimes = { version = "0.30.0", features = ["tokio-runtime"] }
+gufi-asgi = { version = "0.2.0-alpha.23", path = "crates/asgi" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1.0" }
 serde_yaml = { version = "0.9" }
 toml_edit = { version = "0.25", default-features = false, features = ["parse"] }
-claviron = { version = "0.2.0-alpha.23", path = "../claviron", default-features = false, features = [
+claviron = { workspace = true, features = [
     "http",
     "runner",
     "supervisor",
     "orbit",
 ] }
 http = { version = "1.4" }
-http-body = { version = "1.0" }
-http-body-util = { version = "0.1" }
-percent-encoding = { version = "2.3" }
 thiserror = { version = "2.0" }
 tower-service = { version = "0.3" }
 tracing = { version = "0.1" }
@@ -55,10 +64,6 @@ tokio-util = { version = "0.7", features = ["rt"] }
 # `service_fn` goes through it with no axum in the graph at all.
 [dev-dependencies]
 tempfile = "3"
-
-[build-dependencies]
-# Reads the interpreter PyO3 links; the same version as `pyo3`.
-pyo3-build-config = { version = "0.30.1", features = ["resolve-config"] }
 
 [features]
 default = ["axum"]
@@ -87,12 +92,12 @@ metrics = ["claviron/metrics"]
 # HTTP round trip. Built in, the service runs and reads `broadcast.yaml` beside
 # the application; off by default, so an application that broadcasts nothing
 # carries none of it.
-broadcast = ["claviron/broadcast"]
-# Django additions, under `src/django/`: Channels' channel layer
+broadcast = ["claviron/broadcast", "gufi-asgi/broadcast"]
+# Django additions in the ASGI engine: Channels' channel layer
 # (`gufi.channels.OrbitChannelLayer`) over the broadcast service's groups,
 # configured by `broadcasting.channels` in gufi.yaml. The project installs
 # `channels` and `msgpack` itself.
-django = ["broadcast"]
+django = ["broadcast", "gufi-asgi/django"]
 # Static mounts in front of the application (`files:` in gufi.yaml), served by
 # Claviron's file service — what runserver's static handling or WhiteNoise
 # does, for a process no edge stands in front of. No edge comes with it.
@@ -101,7 +106,7 @@ files = ["axum", "claviron/files"]
 # `logging.yaml` beside it declares, written by the master's one writer, and
 # `gufi.LogHandler` putting Python's `logging` on them — what the
 # `claviron` log driver is to Laravel. `log-otlp` adds the OTLP adapter.
-log = ["claviron/log-pipeline"]
+log = ["claviron/log-pipeline", "gufi-asgi/log"]
 log-otlp = ["log", "claviron/log-otlp"]
 # Development's reload: the master watches the application's Python with the
 # platform's native notifications and asks for a rolling worker restart on a
