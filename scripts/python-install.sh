@@ -1,44 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# The CPython 3.15 a gufi runner embeds on Linux and FreeBSD.
+# Production CPython for Gufi's Linux and FreeBSD application binaries.
+# PGO and LTO optimize the interpreter. ELF shared builds also avoid semantic
+# interposition and use initial-exec TLS because libpython is linked at startup.
+# macOS uses an explicitly selected native CPython installation instead.
 #
-# A runner loads libpython as a shared library, and on ELF how that library
-# was built decides how fast every line of Python runs. Debian's
-# `libpython3.13.so` runs the same code about 1.5x slower than Debian's own
-# `/usr/bin/python3.13`, which links libpython statically: measured on xd01,
-# 2026-09-25, it held a FastAPI SSR page at 392 req/s against uvicorn's 563.
-# Two things cost it, both visible in a profile of the runner:
-#
-#   semantic interposition — every call inside the library goes through the
-#     GOT/PLT and nothing inlines across functions;
-#   the TLS model — each read of the thread state goes through `tlsdesc`.
-#
-# No distribution's Python is trusted for this, however it was built: the
-# runner is shipped as our own package, and it carries the interpreter this
-# script makes. Debian, Ubuntu and AlmaLinux 8 (production) alike.
-#
-# This builds the library without either: PGO and LTO as a release CPython,
-# `-fno-semantic-interposition`, and the initial-exec TLS model, which is
-# sound because a runner links libpython at start-up rather than dlopen-ing
-# it. The interpreter binary links the same library through its rpath, so a
-# venv made from it is the environment the runner embeds.
-#
-# macOS needs none of this: Mach-O's two-level namespace has no interposition
-# cost and thread-locals are reached the same way in a dylib as in a static
-# binary. macOS development currently selects Homebrew CPython 3.15 explicitly;
-# it does not use the ELF-specific build below.
-#
-# Usage:
-#   scripts/python-install.sh              # fetch, build, install, verify
-#   scripts/python-install.sh deps         # print the package dependencies
-#   scripts/python-install.sh dry-run      # show the resolved paths
-#   scripts/python-install.sh verify       # smoke-test the installed interpreter
-#
-#   PYTHON_VERSION=3.15.0 scripts/python-install.sh
-#   STATIC=1 scripts/python-install.sh     # libpython.a instead, for a runner
-#                                          # linked statically (prod option)
-PYTHON_VERSION="${PYTHON_VERSION:-3.15.0}"
+# Usage: scripts/python-install.sh [install|verify|dry-run|deps|help]
+# STATIC=1 selects a static archive for an application linked statically.
+PYTHON_VERSION="${PYTHON_VERSION:-3.15.2}"
 [[ "$PYTHON_VERSION" =~ ^3\.15\.[0-9]+$ ]] || {
   echo "ERROR: this installer requires a stable CPython 3.15.x release" >&2
   exit 1
@@ -52,10 +22,8 @@ STATIC="${STATIC:-0}"
 MAKE_JOBS="${MAKE_JOBS:-}"
 SKIP_APT="${SKIP_APT:-0}"
 
-# The PGO training run is CPython's test suite. On the VM guests a signal
-# test in test_generators fails on timing and stops the build; the profile
-# is no worse without it.
-PGO_EXCLUDE="${PGO_EXCLUDE:-test_generators}"
+# Override or set empty to use the complete upstream PGO training selection.
+PGO_EXCLUDE="${PGO_EXCLUDE-test_generators}"
 
 DEBIAN_PACKAGES=(
   build-essential
@@ -76,7 +44,7 @@ DEBIAN_PACKAGES=(
   libedit-dev
 )
 
-# AlmaLinux 8 is the production host. Its gcc 8 builds PGO and LTO; the
+# On AlmaLinux 8, GCC supports PGO and LTO; the
 # decimal module explicitly uses CPython's bundled libmpdec, which EL8 does
 # not package; 3.15 no longer supplies an implicit fallback. Readline replaces
 # libedit here.
@@ -216,9 +184,25 @@ prepare_source() {
 
 build_python() {
   cd "$PYTHON_SRC_DIR"
-  [[ -f Makefile ]] && { make distclean >/dev/null 2>&1 || true; }
+  local make="make"
+  [[ "$(detect_os)" == "freebsd" ]] && make="gmake"
 
-  local flags="-fno-semantic-interposition"
+  # Use the selected Clang's profiling tools, not an unrelated LLVM on PATH.
+  # Profile formats are not interchangeable across LLVM releases.
+  local compiler=() compiler_version profdata
+  read -r -a compiler <<< "${CC:-cc}"
+  compiler_version="$("${compiler[@]}" --version)"
+  if [[ "$compiler_version" == *clang* && -z "${LLVM_PROFDATA:-}" ]]; then
+    profdata="$("${compiler[@]}" -print-prog-name=llvm-profdata)"
+    [[ "$profdata" == /* && -x "$profdata" ]] ||
+      die "cannot locate this Clang's llvm-profdata; set LLVM_PROFDATA to its matching tool"
+    export LLVM_PROFDATA="$profdata"
+    log "PGO profile merger: $LLVM_PROFDATA"
+  fi
+
+  [[ -f Makefile ]] && "$make" distclean
+
+  local flags="-fno-semantic-interposition -O3 -g0 -fno-omit-frame-pointer"
   local shared=(--enable-shared)
   local ldflags="-fno-semantic-interposition -Wl,-rpath,$PYTHON_DIR/lib"
   if [[ "$STATIC" == "1" ]]; then
@@ -230,24 +214,33 @@ build_python() {
     flags="$flags -ftls-model=initial-exec"
   fi
 
+  local cppflags="${CPPFLAGS:-}"
+  if [[ "$(detect_os)" == freebsd ]]; then
+    cppflags="$cppflags -I/usr/local/include"
+    ldflags="$ldflags -L/usr/local/lib"
+    export PKG_CONFIG_PATH="/usr/local/libdata/pkgconfig:/usr/local/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+  fi
+
   local decimal=(--with-system-libmpdec)
   if [[ "$(detect_os)" == "linux" && "$(detect_linux_family)" == "rhel" ]]; then
     decimal=(--without-system-libmpdec)
   fi
 
-  CFLAGS="${CFLAGS:-} $flags" LDFLAGS="${LDFLAGS:-} $ldflags" ./configure \
+  CFLAGS="${CFLAGS:-} $flags" CPPFLAGS="$cppflags" LDFLAGS="${LDFLAGS:-} $ldflags" ./configure \
     --prefix="$PYTHON_DIR" \
     "${shared[@]}" \
     "${decimal[@]}" \
     --with-frame-pointers \
+    --without-pydebug \
     --enable-optimizations \
     --with-lto \
     --with-computed-gotos \
+    --with-readline=readline \
     --without-ensurepip
 
-  local make="make"
-  [[ "$(detect_os)" == "freebsd" ]] && make="gmake"
-  "$make" -j"$(jobs_count)" PROFILE_TASK="-m test --pgo -x $PGO_EXCLUDE"
+  local profile_task='-m test --pgo'
+  if [[ -n "$PGO_EXCLUDE" ]]; then profile_task+=" -x $PGO_EXCLUDE"; fi
+  "$make" -j"$(jobs_count)" PROFILE_TASK="$profile_task"
   # Compilation stays unprivileged; only installation into /opt needs root.
   if [[ "$INSTALL_WITH_SUDO" == "1" ]]; then
     sudo "$make" install
@@ -259,11 +252,15 @@ build_python() {
 verify_install() {
   local python="$PYTHON_DIR/bin/python$PYTHON_MINOR"
   [[ -x "$python" ]] || die "interpreter missing: $python"
-  "$python" -c '
-import sys, sysconfig
+  EXPECTED_PYTHON_VERSION="$PYTHON_VERSION" "$python" -I -c '
+import os, sys, sysconfig
 import ssl, sqlite3, ctypes, decimal, lzma, bz2, zlib, uuid, readline, _struct
 from builtins import frozendict, sentinel
 assert sys.implementation.name == "cpython" and sys.version_info[:2] == (3, 15), "CPython 3.15 required"
+assert sys.version.split()[0] == os.environ["EXPECTED_PYTHON_VERSION"], "Installed patch version does not match PYTHON_VERSION"
+assert not sysconfig.get_config_var("Py_DEBUG"), "A non-debug interpreter is required"
+args = sysconfig.get_config_var("CONFIG_ARGS") or ""
+assert "--enable-optimizations" in args and "--with-lto" in args, "PGO and LTO are required"
 print("OK:", sys.version.split()[0],
       "shared" if sysconfig.get_config_var("Py_ENABLE_SHARED") else "static",
       sysconfig.get_config_var("LIBDIR"))
@@ -272,7 +269,7 @@ print("OK:", sys.version.split()[0],
     # The interpreter must load this prefix's library, not the system's.
     local loaded_lib
     loaded_lib="$(ldd "$python" | awk -v lib="libpython$PYTHON_MINOR.so" \
-      '($1 == lib || index($1, lib ".") == 1) && $2 == "=>" { print $3; exit }')"
+      '($1 == lib || index($1, lib ".") == 1) && $2 == "=>" && !found { print $3; found = 1 }')"
     # A relocated installation may retain its original rpath through a symlink.
     # Compare file identity so that this still rejects a different libpython.
     [[ -n "$loaded_lib" && "$loaded_lib" -ef "$PYTHON_DIR/lib/libpython$PYTHON_MINOR.so" ]] ||
@@ -326,13 +323,28 @@ dry_run() {
   echo "source: $PYTHON_SRC_DIR"
   echo "prefix: $PYTHON_DIR"
   echo "library: $([[ "$STATIC" == "1" ]] && echo static || echo shared)"
+  echo "profile: production release (-O3 -g0, PGO, LTO)"
+  echo "debug: disabled (--without-pydebug)"
   echo "make jobs: $(jobs_count)"
   echo "pgo excludes: $PGO_EXCLUDE"
   echo "dependencies: $(print_deps)"
 }
 
 main() {
-  case "${1:-install}" in
+  case "${1:-help}" in
+    help|-h|--help)
+      cat <<'HELP'
+Usage: scripts/python-install.sh [install|verify|dry-run|deps|help]
+
+Build production CPython 3.15.2 by default, with PGO, LTO and debug disabled.
+PYTHON_VERSION selects another stable 3.15 patch release.
+PYTHON_INSTALL_DIR and PYTHON_SRC_DIR select installation and source paths.
+CC selects the compiler; Clang requires its matching LLVM_PROFDATA for PGO.
+STATIC=1 builds a static library; shared is the default for Gufi applications.
+MAKE_JOBS controls build parallelism; SKIP_APT=1 skips dependency installation.
+PGO_EXCLUDE selects excluded training modules; an empty value excludes none.
+HELP
+      return 0 ;;
     deps) print_deps; exit 0 ;;
     dry-run) dry_run; exit 0 ;;
     verify) verify_install; exit 0 ;;
@@ -349,4 +361,4 @@ main() {
   verify_install
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi

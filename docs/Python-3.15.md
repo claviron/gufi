@@ -14,7 +14,7 @@ The build configuration must resolve with PyO3 rather than retain a second,
 older configuration crate. The 0.30 release supports CPython 3.15 final; its
 pyclass extraction and native API changes were reviewed against this bridge.
 The owned deployment Python includes its matching standard library and native
-modules. The current macOS development installation is Homebrew CPython 3.15.0;
+modules. macOS uses an explicitly selected native CPython 3.15 installation;
 Linux/FreeBSD use `scripts/python-install.sh` and their explicitly selected prefix.
 
 Keep Python/PHP selection, PATH and Rust flags in one shared host build
@@ -88,15 +88,18 @@ The driver joins only tasks it creates, not arbitrary framework background work.
 
 ## Owned CPython installer
 
-The installer accepts stable 3.15.x only, preserves supplied compiler/linker
-flags and explicitly keeps frame pointers enabled. CPython 3.15 removed the
-implicit bundled-libmpdec fallback: Debian/FreeBSD select the packaged system
-library, while EL8 explicitly selects the bundled library. This preserves the
-existing dependency policy without silently losing the decimal extension.
-The macOS development installation is not rebuilt by this ELF-oriented script.
-Verification checks the installed minor version, essential extensions and the
-loaded libpython identity. No interpreter installation or operating-system
-dependency operation was run as part of this source change.
+The canonical [installer](../scripts/README.md) defaults to CPython **3.15.2**
+and accepts stable 3.15.x patch releases. It builds a non-debug production
+interpreter with `-O3 -g0`, PGO, LTO, computed gotos and frame pointers.
+Inherited include/link flags are preserved; inherited `-O0` cannot disable
+its release optimization. Shared ELF builds retain initial-exec TLS and
+`-fno-semantic-interposition` for Gufi's startup-linked libpython.
+
+FreeBSD selects `gmake` before cleanup and uses the selected Clang's matching
+`llvm-profdata` for PGO, plus the ports dependency lookup paths. Installed
+verification checks the exact selected patch release, debug disabled, PGO/LTO,
+required modules and the identity of the loaded libpython. The Claviron copy
+has been removed; interpreter installation belongs to Gufi alone.
 
 ## Profiling across Python and Rust
 

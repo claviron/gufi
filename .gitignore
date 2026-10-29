@@ -26,6 +26,10 @@ install_manifest.txt
 compile_commands.json
 .cache/
 
+# --- Python bytecode ---
+__pycache__/
+*.pyc
+
 # --- PHP / Composer ---
 /vendor/
 composer.phar

@@ -8,6 +8,10 @@ gufi runs Python ASGI applications inside a Rust binary you build and own.
 Your Python framework handles the application; gufi connects it to Claviron's
 runtime and manages ASGI lifespan, requests and shutdown.
 
+For the optimized CPython 3.15.2 interpreter on Linux or FreeBSD, use
+[the owned Python installer](scripts/README.md). It defaults to a non-debug
+production build with PGO and LTO.
+
 ## Workspace
 
 The workspace contains two Rust packages:
