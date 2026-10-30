@@ -240,12 +240,18 @@ build_python() {
 
   local profile_task='-m test --pgo'
   if [[ -n "$PGO_EXCLUDE" ]]; then profile_task+=" -x $PGO_EXCLUDE"; fi
-  "$make" -j"$(jobs_count)" PROFILE_TASK="$profile_task"
+  # CPython's LTO configuration adds -g after CFLAGS. These make variables
+  # follow configure's flags, including in the recursive PGO build.
+  local release_flags=(
+    "CFLAGS_NODIST=${CFLAGS_NODIST:+$CFLAGS_NODIST }-O3 -g0"
+    "LDFLAGS_NODIST=${LDFLAGS_NODIST:+$LDFLAGS_NODIST }-g0"
+  )
+  "$make" -j"$(jobs_count)" "${release_flags[@]}" PROFILE_TASK="$profile_task"
   # Compilation stays unprivileged; only installation into /opt needs root.
   if [[ "$INSTALL_WITH_SUDO" == "1" ]]; then
-    sudo "$make" install
+    sudo "$make" "${release_flags[@]}" install
   else
-    "$make" install
+    "$make" "${release_flags[@]}" install
   fi
 }
 

@@ -72,6 +72,13 @@ class PythonInstallTest(unittest.TestCase):
             self.assertIn(option, call)
         self.assertIn("PROFILE_TASK=-m test --pgo -x test_generators", self.calls("make")[0])
 
+    def test_lto_debug_flags_are_overridden_during_build_and_install(self):
+        result = self.run_harness("build", CFLAGS_NODIST="-g3", LDFLAGS_NODIST="-g")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for call in self.calls("make"):
+            self.assertIn("CFLAGS_NODIST=-g3 -O3 -g0", call)
+            self.assertIn("LDFLAGS_NODIST=-g -g0", call)
+
     def test_freebsd_uses_gmake_and_matching_clang_profile_tool(self):
         (self.source / "Makefile").touch()
         result = self.run_harness("build", FIXTURE_OS="FreeBSD", FIXTURE_COMPILER="clang version 19 fixture")
