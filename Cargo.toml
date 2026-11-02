@@ -21,13 +21,13 @@ members = ["crates/asgi"]
 resolver = "3"
 
 [workspace.package]
-version = "0.2.0-alpha.24"
+version = "0.2.0-alpha.25"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/claviron/gufi"
 
 [workspace.dependencies]
-claviron = { version = "0.2.0-alpha.23", path = "../claviron", default-features = false }
+claviron = { version = "0.2.0-alpha.24", default-features = false }
 
 # Gufi compiles a Python application's own binary against Claviron. It
 # reaches Claviron the way any consumer does — through the root facade, never
@@ -36,7 +36,7 @@ claviron = { version = "0.2.0-alpha.23", path = "../claviron", default-features 
 bytes = { version = "1.11" }
 clap = { version = "4", features = ["derive"], optional = true }
 async-trait = { version = "0.1" }
-gufi-asgi = { version = "0.2.0-alpha.24", path = "crates/asgi" }
+gufi-asgi = { version = "0.2.0-alpha.25", path = "crates/asgi" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1.0" }
 serde_yaml = { version = "0.9" }

@@ -56,7 +56,7 @@ you already have.
 
 ```toml
 [dependencies]
-gufi     = "0.2.0-alpha.24"
+gufi     = "0.2.0-alpha.25"
 tokio    = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 axum     = "0.8"   # or warp, or nothing — see "Your router stays yours"
 ```
