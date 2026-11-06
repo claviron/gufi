@@ -12,7 +12,7 @@ use std::thread::{self, JoinHandle};
 
 use bytes::Bytes;
 use claviron::app::invoke::InvocationRouter;
-use claviron::orbit::transport::Message;
+use claviron::orbit::link::application::Message;
 use pyo3::prelude::*;
 use pyo3::types::{
     PyAnyMethods, PyDict, PyDictMethods, PyList, PyListMethods, PyModule,
@@ -233,7 +233,7 @@ impl PythonApplication {
     #[cfg(feature = "broadcast")]
     pub fn broadcast(
         mut self,
-        service: Arc<claviron::broadcast::BroadcastService>,
+        service: Arc<claviron_broadcast::BroadcastService>,
         default_application: String,
     ) -> Self {
         self.broadcast = Some(crate::broadcast::Publisher::new(
@@ -248,7 +248,7 @@ impl PythonApplication {
     #[cfg(feature = "django")]
     pub fn channels(
         mut self,
-        groups: claviron::broadcast::GroupLayer,
+        groups: claviron_broadcast::GroupLayer,
         settings: &crate::config::Channels,
     ) -> Self {
         self.channels =

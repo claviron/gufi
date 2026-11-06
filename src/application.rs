@@ -87,7 +87,7 @@ impl Component<AppState> for PythonApplicationService {
         Arc<ApplicationManager>,
         Option<Arc<InvocationRouter>>,
         Option<Arc<CounterProvider>>,
-        Option<Arc<claviron::broadcast::BroadcastService>>,
+        Option<Arc<claviron_broadcast::BroadcastService>>,
     );
 
     fn name(&self) -> &'static str {

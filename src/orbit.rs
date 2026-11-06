@@ -1,9 +1,9 @@
 //! Reliable message sessions over Link; network protocols belong to the edge.
 //!
 //! The ingress itself — the lane, the reader, exchanges and their bodies — is
-//! the runner shell's (`claviron::runner::OrbitIngress`), and so is a Pusher
-//! client's WebSocket, which is a broadcast session. What is Python's is any
-//! other: the ASGI application's. The edge speaks the protocol and whole
+//! the runner shell's (`claviron::runner::OrbitIngress`). A Pusher client's
+//! WebSocket is a broadcast session, `claviron_broadcast::runner`'s. What is
+//! Python's is any other: the ASGI application's. The edge speaks the protocol and whole
 //! messages cross the slot.
 
 use std::future::{Future, poll_fn};
@@ -11,7 +11,7 @@ use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
-use claviron::orbit::transport::{
+use claviron::orbit::link::application::{
     Endpoint, Message, MessageReader, write_message,
 };
 use claviron::runner::{AppRequest, Handshake};

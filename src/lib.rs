@@ -31,12 +31,12 @@ pub use claviron;
 /// end up with a second one.
 #[cfg(feature = "axum")]
 pub use claviron::axum;
-/// Application-owned routes built from the registered shared provider.
-#[cfg(feature = "axum")]
-pub use claviron::http::routing::Routable;
 /// Which proxies' forwarding headers count; Claviron's, re-exported.
 pub use claviron::http::trust;
 pub use claviron::http::trust::Trust;
+/// Application-owned routes built from the registered shared provider.
+#[cfg(feature = "axum")]
+pub use claviron::pipeline::routing::Routable;
 #[cfg(feature = "tls")]
 pub use claviron::runner::Tls;
 #[cfg(feature = "files")]

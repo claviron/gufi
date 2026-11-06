@@ -15,8 +15,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use claviron::broadcast::GroupLayer;
-use claviron::broadcast::groups::GroupError;
+use claviron_broadcast::GroupLayer;
+use claviron_broadcast::groups::GroupError;
 use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;

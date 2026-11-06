@@ -9,7 +9,7 @@ Hosts that own routing and lifecycle can depend on the engine directly:
 
 ```toml
 [dependencies]
-gufi-asgi = "0.2.0-alpha.25"
+gufi-asgi = "0.2.0-alpha.26"
 ```
 
 ## Ownership

@@ -2,9 +2,8 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use claviron::Server;
 use claviron::http::trust::Network;
-use claviron::runner::{Bind, Protocols, launch};
+use claviron::runner::{Bind, Composition, Protocols};
 use claviron::runtime::{AppState, registry};
 
 use crate::application::PythonApplicationService;
@@ -294,53 +293,20 @@ impl Runner {
         if launch.runner.watch && launch.runner.workers.unwrap_or(0) < 2 {
             return Err(Error::WatchWithoutWorkers);
         }
-        let production = launch.runner.production;
-        let environment = launch.runner.environment.clone();
-        let prepared = launch.prepare(name).map_err(Error::Registry)?;
-        let definitions = launch.clone();
-
         // Named once here so the master can say where the launch came from.
         let configuration = self
             .config_path
             .clone()
             .unwrap_or_else(|| root.join(crate::CONFIG_FILE));
-        let config_dir = configuration
-            .parent()
-            .filter(|path| !path.as_os_str().is_empty())
-            .unwrap_or_else(|| std::path::Path::new("."))
-            .to_path_buf();
+        let config_path = configuration.clone();
         let configuration = configuration.is_file().then_some(configuration);
         let target = self.target;
 
-        // Production only by `--production`; otherwise `--environment`, and
-        // without either, `local`.
-        let server = match (production, environment) {
-            (true, _) => Server::new().production(),
-            (false, Some(environment)) => {
-                Server::new().environment(environment)
-            }
-            (false, None) => Server::new(),
-        };
-        server
-            .workers(prepared.workers)
-            .launch(prepared.envelope)
-            // The instance lock and this process's own fleet, both under the
-            // application's own name — never Claviron's `clv`.
-            .name(prepared.name.clone())
-            .fleet_name(prepared.fleet_name)
-            .config_dir(config_dir)
-            .with_definitions(move |state| {
-                let definitions = definitions.inherited(state)?;
-                claviron::runner::supervisor::register_policy(
-                    state,
-                    definitions.runner.supervisor.clone().unwrap_or_default(),
-                )
-            })
-            .register(move |state| {
-                // A worker serves what its master resolved, and reads it
-                // before anything is registered from it: the interpreter's
-                // root and environment are in there too.
-                let launch = launch.inherited(state)?;
+        Composition::new(
+            launch,
+            name,
+            crate::orbit::ASGI_RUNTIME,
+            move |state, launch| {
                 if !state.is_worker()
                     && let Some(path) = &configuration
                 {
@@ -348,69 +314,97 @@ impl Runner {
                 }
                 let runner = &launch.runner;
                 let root = launch.own.root.clone().unwrap_or_default();
-                let venv = launch.own.venv.clone().unwrap_or_else(|| root.join(".venv"));
+                let venv = launch
+                    .own
+                    .venv
+                    .clone()
+                    .unwrap_or_else(|| root.join(".venv"));
 
                 // The master watches the source and restarts its workers; the
                 // workers are what it restarts, so they do not watch.
                 #[cfg(feature = "watch")]
                 if state.is_master() && runner.watch {
-                    state.registry_ref().register(Arc::new(crate::watch::watcher(
-                        root.clone(),
-                        runner.watch_paths.clone()
-                    )))?;
+                    state.registry_ref().register(Arc::new(
+                        crate::watch::watcher(
+                            root.clone(),
+                            runner.watch_paths.clone(),
+                        ),
+                    ))?;
                 }
 
                 // The owner: the interpreter, and whatever the application's
-                // routes do not claim. The broadcast service itself is
-                // Claviron's; what the launch adds is the application
+                // routes do not claim. The broadcast service itself is its own
+                // crate's; what the launch adds is the application
                 // `gufi.broadcast` publishes to.
                 let application = Arc::new(PythonApplicationService::new(
                     target,
-                    root.clone(),
+                    root,
                     venv,
                     runner.frameworks.clone().unwrap_or_default(),
                     runner.icon.clone(),
                     #[cfg(feature = "broadcast")]
-                    launch.own.broadcasting.clone().unwrap_or_default()
+                    launch.own.broadcasting.clone().unwrap_or_default(),
                 ));
                 let python = application.service();
                 let handle = application.handle_cell();
-                let message_limit = launch.own.link_message_limit
+                let message_limit = launch
+                    .own
+                    .link_message_limit
                     .map(std::num::NonZeroUsize::get)
                     .unwrap_or(crate::orbit::DEFAULT_MESSAGE_LIMIT);
                 #[cfg(feature = "websocket")]
-                let upgrades = crate::websocket::Upgrades::new(Arc::clone(&handle));
+                let upgrades =
+                    crate::websocket::Upgrades::new(Arc::clone(&handle));
                 // A WebSocket over Orbit that is not a broadcast session: the
                 // ASGI application's.
-                let owner = claviron::runner::Owner::new(python).orbit_sessions(
-                    move |request, endpoint, handshake| {
-                        crate::orbit::session(request, endpoint, handshake, Arc::clone(&handle), message_limit)
-                    }
-                );
+                let owner = claviron::runner::Owner::new(python)
+                    .orbit_sessions(move |request, endpoint, handshake| {
+                        crate::orbit::session(
+                            request,
+                            endpoint,
+                            handshake,
+                            Arc::clone(&handle),
+                            message_limit,
+                        )
+                    });
                 #[cfg(feature = "websocket")]
                 let owner = owner.upgrades(upgrades);
-                claviron::runner::register_owner(state, owner)?;
+                // A Pusher client's channels stand in front of the application.
+                #[cfg(feature = "broadcast")]
+                let owner = claviron_broadcast::runner::in_front(state, owner)?;
                 state.registry_ref().register(application)?;
-                launch::register_routing(state, runner, &root)?;
-                #[cfg(feature = "bench")]
-                claviron::bench::runner::BenchService::register_with_alias_prefix(state, "/_gufi")?;
-                // The fleet's keyed counters: `gufi.counter(key)` in
-                // Python, `CounterProvider` in Rust.
-                claviron::orbit::register_counter(state)?;
+                Ok(owner)
+            },
+        )
+        .config_path(&config_path)
+        .root(|launch| launch.own.root.clone().unwrap_or_default())
+        .definitions(|state, _| {
+            #[cfg(feature = "broadcast")]
+            claviron_broadcast::register(state)?;
+            #[cfg(not(feature = "broadcast"))]
+            let _ = state;
+            Ok(())
+        })
+        .configure(move |state, _| {
+            #[cfg(feature = "bench")]
+            claviron::bench::runner::BenchService::register_with_alias_prefix(
+                state, "/_gufi",
+            )?;
+            // The fleet's keyed counters: `gufi.counter(key)` in Python,
+            // `CounterProvider` in Rust.
+            claviron::orbit::register_counter(state)?;
 
-                // Then the application's own registrations, which may compose
-                // the interpreter behind their routes.
-                configure(state)?;
-                #[cfg(feature = "axum")]
-                if let Some(interceptor) = interceptor {
-                    interceptor(state)?;
-                }
-                claviron::runner::ensure_application(state)?;
-                launch::register_trust(state, runner)?;
-                launch::register_doors(state, runner, crate::orbit::ASGI_RUNTIME, None)
-            })
-            .serve()
-            .await?;
+            // Then the application's own registrations, which may compose
+            // the interpreter behind their routes.
+            configure(state)?;
+            #[cfg(feature = "axum")]
+            if let Some(interceptor) = interceptor {
+                interceptor(state)?;
+            }
+            Ok(())
+        })
+        .serve()
+        .await?;
         Ok(())
     }
 }

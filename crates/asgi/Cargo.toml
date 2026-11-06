@@ -13,13 +13,14 @@ include = ["/src/**", "/build.rs", "/Cargo.toml", "/README.md", "/LICENSE"]
 
 [features]
 default = []
-broadcast = ["claviron/broadcast"]
+broadcast = ["dep:claviron-broadcast"]
 django = ["broadcast", "dep:serde"]
 log = ["claviron/log-pipeline"]
 
 [dependencies]
 bytes = "1.11"
 claviron = { workspace = true, features = ["http", "application", "orbit"] }
+claviron-broadcast = { workspace = true, optional = true }
 http = "1.4"
 http-body = "1.0"
 http-body-util = "0.1"

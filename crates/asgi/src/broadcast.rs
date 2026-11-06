@@ -6,8 +6,8 @@
 
 use std::sync::Arc;
 
-use claviron::broadcast::BroadcastService;
-use claviron::broadcast::protocol::pusher::PublishedEvent;
+use claviron_broadcast::BroadcastService;
+use claviron_broadcast::protocol::pusher::PublishedEvent;
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyString};
 
