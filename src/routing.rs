@@ -4,8 +4,8 @@
 use claviron::runtime::{AppState, registry};
 
 pub use claviron::runner::{AppRequest, RequestBody};
-pub(crate) use gufi_asgi::routing::request_scope as scope;
-pub use gufi_asgi::routing::{
+pub(crate) use claviron_asgi::routing::request_scope as scope;
+pub use claviron_asgi::routing::{
     AppResponse, BoxError, PythonService, ResponseBody, full_body,
 };
 

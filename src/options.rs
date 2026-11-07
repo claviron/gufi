@@ -118,7 +118,7 @@ pub struct Broadcasting {
 }
 
 #[cfg(feature = "django")]
-pub use gufi_asgi::config::Channels;
+pub use claviron_asgi::config::Channels;
 
 /// What gufi calls its file beside an application.
 pub const CONFIG_FILE: &str = "gufi.yaml";

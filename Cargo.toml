@@ -17,7 +17,6 @@ include = ["/src/**", "/stubs/**", "/assets/gufi.svg", "/build.rs", "/Cargo.toml
 links = "gufi"
 
 [workspace]
-members = ["crates/asgi"]
 resolver = "3"
 
 [workspace.package]
@@ -37,7 +36,7 @@ claviron-broadcast = { version = "0.2.0-alpha.25" }
 bytes = { version = "1.11" }
 clap = { version = "4", features = ["derive"], optional = true }
 async-trait = { version = "0.1" }
-gufi-asgi = { version = "0.2.0-alpha.26", path = "crates/asgi" }
+claviron-asgi = { version = "0.2.0-alpha.26", path = "../../embed/asgi" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1.0" }
 serde_yaml = { version = "0.9" }
@@ -97,12 +96,12 @@ metrics = ["claviron/metrics"]
 # HTTP round trip. Built in, the service runs and reads `broadcast.yaml` beside
 # the application; off by default, so an application that broadcasts nothing
 # carries none of it.
-broadcast = ["dep:claviron-broadcast", "claviron-broadcast/runner", "gufi-asgi/broadcast"]
+broadcast = ["dep:claviron-broadcast", "claviron-broadcast/runner", "claviron-asgi/broadcast"]
 # Django additions in the ASGI engine: Channels' channel layer
 # (`gufi.channels.OrbitChannelLayer`) over the broadcast service's groups,
 # configured by `broadcasting.channels` in gufi.yaml. The project installs
 # `channels` and `msgpack` itself.
-django = ["broadcast", "gufi-asgi/django"]
+django = ["broadcast", "claviron-asgi/django"]
 # Static mounts in front of the application (`files:` in gufi.yaml), served by
 # Claviron's file service — what runserver's static handling or WhiteNoise
 # does, for a process no edge stands in front of. No edge comes with it.
@@ -111,7 +110,7 @@ files = ["axum", "claviron/files"]
 # `logging.yaml` beside it declares, written by the master's one writer, and
 # `gufi.LogHandler` putting Python's `logging` on them — what the
 # `claviron` log driver is to Laravel. `log-otlp` adds the OTLP adapter.
-log = ["claviron/log-pipeline", "gufi-asgi/log"]
+log = ["claviron/log-pipeline", "claviron-asgi/log"]
 log-otlp = ["log", "claviron/log-otlp"]
 # Development's reload: the master watches the application's Python with the
 # platform's native notifications and asks for a rolling worker restart on a

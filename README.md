@@ -12,14 +12,12 @@ For the optimized CPython 3.15.2 interpreter on Linux or FreeBSD, use
 [the owned Python installer](scripts/README.md). It defaults to a non-debug
 production build with PGO and LTO.
 
-## Workspace
-
-The workspace contains two Rust packages:
+## Packages
 
 | Package | Responsibility |
 | --- | --- |
 | `gufi` | Application runner, launch configuration, lifecycle registration and HTTP/Orbit ingress. |
-| [`gufi-asgi`](crates/asgi/README.md) | CPython/PyO3, ASGI lifespan, streaming HTTP/message execution and the native Python module. |
+| [`claviron-asgi`](https://github.com/claviron/asgi) | CPython/PyO3, ASGI lifespan, streaming HTTP/message execution and the native Python module. |
 
 `gufi::Runner`, `gufi::asgi` and the existing HTTP service types retain their
 public paths. Application build scripts also keep using
@@ -198,7 +196,7 @@ files or supervision — and its numbers are not performance evidence.
 
 In production a Claviron edge terminates TLS, routes vhosts and serves static
 files, and reaches this process by name over Orbit shared memory instead of a
-socket. This is the runner's deployment topology. Hosts embedding `gufi-asgi`
+socket. This is the runner's deployment topology. Hosts embedding `claviron-asgi`
 directly own their ingress and application lifetime, within the engine's
 process-wide interpreter and environment constraints.
 

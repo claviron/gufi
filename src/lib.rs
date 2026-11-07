@@ -11,7 +11,7 @@ pub mod bench;
 
 mod application;
 /// The Python engine, retaining the runner's existing module path.
-pub use gufi_asgi::asgi;
+pub use claviron_asgi::asgi;
 mod framework;
 mod management;
 pub(crate) mod options;

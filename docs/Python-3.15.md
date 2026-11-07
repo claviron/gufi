@@ -1,7 +1,7 @@
 # Python 3.15 integration
 
 Scope: CPython 3.15.x only. No older-interpreter compatibility path is retained.
-Python execution belongs to the workspace's `gufi-asgi` engine. The `gufi`
+Python execution belongs to the `claviron-asgi` engine. The `gufi`
 runner uses that engine and keeps its existing launch and link-metadata API.
 
 ## Interpreter ownership and builds
