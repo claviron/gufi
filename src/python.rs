@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use claviron::http::trust::Network;
 use claviron::runner::{Bind, Composition, Protocols};
-use claviron::runtime::{AppState, registry};
+use claviron::runtime::{AppState, Register, registry};
 
 use crate::application::PythonApplicationService;
 use crate::options::Launch;
@@ -32,6 +32,8 @@ pub enum Error {
     Registry(String),
 }
 
+type Registration = Box<dyn FnOnce(&AppState) -> registry::Result<()> + Send>;
+
 /// Standalone Python application runner with a local HTTP development ingress.
 ///
 /// By convention the process working directory is the application root and
@@ -42,6 +44,7 @@ pub struct Runner {
     target: String,
     launch: Launch,
     config_path: Option<PathBuf>,
+    registrations: Vec<Registration>,
     #[cfg(feature = "axum")]
     interceptor: Option<Interceptor>,
 }
@@ -81,6 +84,7 @@ impl Runner {
             target: target.into(),
             launch: Launch::default(),
             config_path: None,
+            registrations: Vec::new(),
             #[cfg(feature = "axum")]
             interceptor: None,
         }
@@ -228,6 +232,24 @@ impl Runner {
         self
     }
 
+    /// Register application services before the application is composed. Each
+    /// type owns how its provider instances are built; tuples work too.
+    pub fn with_services<C: Register<AppState> + 'static>(self) -> Self {
+        self.with_bootstrap(C::register)
+    }
+
+    /// Run registrations of your own before the application is composed.
+    pub fn with_bootstrap<F>(
+        mut self,
+        register: F,
+    ) -> Self
+    where
+        F: FnOnce(&AppState) -> registry::Result<()> + Send + 'static,
+    {
+        self.registrations.push(Box::new(register));
+        self
+    }
+
     /// Rust handles its declared routes before HTTP Routable contributions
     /// and Python. Built after `configure`, so application registrations are
     /// available. Calling this again replaces the selected interceptor.
@@ -261,6 +283,7 @@ impl Runner {
     {
         #[cfg(feature = "axum")]
         let interceptor = self.interceptor;
+        let registrations = self.registrations;
         let mut launch = self.launch;
         let root = match launch.own.root.clone() {
             Some(path) => path,
@@ -396,6 +419,9 @@ impl Runner {
 
             // Then the application's own registrations, which may compose
             // the interpreter behind their routes.
+            for register in registrations {
+                register(state)?;
+            }
             configure(state)?;
             #[cfg(feature = "axum")]
             if let Some(interceptor) = interceptor {
