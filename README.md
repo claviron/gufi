@@ -37,7 +37,7 @@ That matters because the process is where Rust and Python meet. Once it is
 yours, moving a piece of work across that line is a local decision instead of a
 rewrite:
 
-- **A function in Rust, called from Python.** `configure` registers a typed
+- **A function in Rust, called from Python.** A registered service adds a typed
   handler and the application awaits it through `claviron.invoke`. It is a
   native extension in everything but the build — same process, same binary, no
   separate `.so`, no FFI to maintain.
@@ -73,18 +73,32 @@ use gufi::Runner;
 async fn main() -> gufi::Result<()> {
     Runner::new("main:app")
         .name("checkout")
+        .with_services::<app::Services>()
+        .with_bootstrap(app::register)
         .with_interceptor(app::routes::router)
-        .run(app::configure)
+        .run()
         .await
 }
 ```
 
 ```rust
 // src/app.rs
-use gufi::claviron::{AppState, registry};
+use gufi::claviron::{AppState, Register, registry};
 
-pub fn configure(state: &AppState) -> registry::Result<()> {
-    // Register your application services and event listeners here.
+/// Your application services and event listeners, in the order they register.
+pub type Services = (Listeners,);
+
+pub struct Listeners;
+
+impl Register<AppState> for Listeners {
+    fn register(state: &AppState) -> registry::Result<()> {
+        // state.events().listen::<SomeEvent, _>(handler)?;
+        Ok(())
+    }
+}
+
+/// Anything else, which need not be a service of its own.
+pub fn register(_state: &AppState) -> registry::Result<()> {
     Ok(())
 }
 ```
@@ -127,7 +141,7 @@ Nothing there mentions a fallback, and nothing should: **the Python
 application is the fallback.** A path your routes do not declare, and a
 declared path reached with an undeclared method, both reach the interpreter.
 Your application stays the authority on what exists; the Rust routes only
-intercept. `with_interceptor` wires that after `configure`; registered HTTP
+intercept. `with_interceptor` wires that after `with_services`; registered HTTP
 `Routable` services stand between that router and Python. Without an explicit
 interceptor, those routables still run. `register_router` remains available
 for custom registration callbacks.
@@ -145,7 +159,7 @@ cannot end up with two of them.
 
 ## Calling Rust from Python
 
-`configure` registers typed Rust handlers, and the application calls them
+A registered service adds typed Rust handlers, and the application calls them
 through a module the runtime installs into the interpreter:
 
 ```python

@@ -274,13 +274,7 @@ impl Runner {
     /// completed, shutdown drains them, and finalize runs last. The doors,
     /// routing, trust and supervision are the runner shell's; the interpreter
     /// is this crate's owner among them.
-    pub async fn run<F>(
-        self,
-        configure: F,
-    ) -> Result<()>
-    where
-        F: FnOnce(&AppState) -> registry::Result<()> + Send + 'static,
-    {
+    pub async fn run(self) -> Result<()> {
         #[cfg(feature = "axum")]
         let interceptor = self.interceptor;
         let registrations = self.registrations;
@@ -422,7 +416,6 @@ impl Runner {
             for register in registrations {
                 register(state)?;
             }
-            configure(state)?;
             #[cfg(feature = "axum")]
             if let Some(interceptor) = interceptor {
                 interceptor(state)?;
