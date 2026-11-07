@@ -82,7 +82,7 @@ cli = ["dep:clap", "claviron/runner-cli"]
 tls = ["claviron/tls"]
 # WebSocket on gufi's own listener, spoken by the runner shell. Over Orbit the edge speaks
 # the protocol and this is not needed.
-websocket = ["claviron/websocket"]
+websocket = ["claviron/websocket", "claviron-asgi/websocket"]
 # LEGACY_LINUX: run on Linux kernels older than 5.3 (AlmaLinux 8's 4.18),
 # which have no pidfd for watching worker processes. Off by default.
 legacy-linux = ["claviron/legacy-linux"]

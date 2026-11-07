@@ -21,7 +21,7 @@ pub mod routing;
 #[cfg(feature = "watch")]
 mod watch;
 #[cfg(feature = "websocket")]
-pub mod websocket;
+pub use claviron_asgi::websocket;
 
 /// The Claviron facade used by this Gufi build, without a separate dependency.
 pub use claviron;

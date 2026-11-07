@@ -4,7 +4,9 @@
 //! its shared-library directory as `DEP_GUFI_PYTHON_LIB_DIR`, so existing
 //! application build scripts keep the same rpath contract.
 fn main() {
-    if let Some(directory) = std::env::var_os("DEP_CLAVIRON_ASGI_PYTHON_LIB_DIR") {
+    if let Some(directory) =
+        std::env::var_os("DEP_CLAVIRON_ASGI_PYTHON_LIB_DIR")
+    {
         println!(
             "cargo:python_lib_dir={}",
             std::path::PathBuf::from(directory).display()
