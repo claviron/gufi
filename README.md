@@ -22,7 +22,7 @@ production build with PGO and LTO.
 `gufi::Runner`, `gufi::asgi` and the existing HTTP service types retain their
 public paths. Application build scripts also keep using
 `DEP_GUFI_PYTHON_LIB_DIR`; the runner forwards it from the engine. Python code
-continues to import `gufi`.
+imports `claviron`.
 
 The engine package can be embedded by a host that owns its own
 routing and lifecycle, without the Gufi runner or its ingress. Its base
@@ -38,7 +38,7 @@ yours, moving a piece of work across that line is a local decision instead of a
 rewrite:
 
 - **A function in Rust, called from Python.** `configure` registers a typed
-  handler and the application awaits it through `gufi.invoke`. It is a
+  handler and the application awaits it through `claviron.invoke`. It is a
   native extension in everything but the build — same process, same binary, no
   separate `.so`, no FFI to maintain.
 - **A route in Rust, never reaching Python.** Declare it and it answers;
@@ -149,26 +149,23 @@ cannot end up with two of them.
 through a module the runtime installs into the interpreter:
 
 ```python
-import gufi
+import claviron
 
-response = await gufi.invoke("claviron.ping.v1", {"echo": "app"})
+response = await claviron.invoke("claviron.ping.v1", {"echo": "app"})
 ```
 
 The call stays in the process — it reaches a handler in this same binary
 rather than leaving over a socket.
 
-Gufi installs this native module at runtime; it is not a Python package in the
-application's virtual environment. The local [stubs](stubs/gufi/__init__.pyi)
-describe invocation, counters, broadcasting, logging and the optional
-[Django Channels layer](stubs/gufi/channels.pyi). Add this repository's `stubs/`
-directory to your editor's stub search path. They contain type declarations
-only, not a Python implementation or a fallback runtime.
+The engine installs this native module at runtime; it is not a Python package in
+the application's virtual environment. The stubs in
+[`claviron-asgi`](https://github.com/claviron/asgi) describe invocation, counters,
+broadcasting, logging and the optional Django Channels layer. They contain type
+declarations only, not a Python implementation or a fallback runtime.
 
 Capabilities are available when configured and enabled by the application's
-Gufi build. Use `gufi.LogHandler` for logging and
-`gufi.channels.OrbitChannelLayer` for Django Channels. No `claviron` Python
-alias is provided; Rust `claviron::...` names and invocation operation
-identifiers such as `claviron.ping.v1` are unchanged.
+Gufi build. Use `claviron.LogHandler` for logging and
+`claviron.channels.OrbitChannelLayer` for Django Channels.
 
 ## Registering your own services
 
@@ -240,7 +237,7 @@ stream gets its own ASGI invocation, so a stream waiting for more bytes does
 not serialize the other streams or the application's writes.
 
 The scope retains the original HTTP version and includes
-`scope["extensions"]["gufi.transport"]` with `name` (`websocket` or
+`scope["extensions"]["claviron.transport"]` with `name` (`websocket` or
 `webtransport`), `method`, `scheme` and `http_version`. This is Gufi's message
 adaptation, not a standard ASGI WebTransport session API. WT clients exchange
 Link Text/Binary/Close records on their bidi streams. WebSocket subprotocol

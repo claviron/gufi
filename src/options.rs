@@ -36,7 +36,7 @@ pub struct GufiOptions {
     #[cfg_attr(feature = "cli", arg(long, value_name = "BYTES"))]
     pub link_message_limit: Option<std::num::NonZeroUsize>,
 
-    /// Broadcasting in this process: the application `gufi.broadcast`
+    /// Broadcasting in this process: the application `claviron.broadcast`
     /// publishes to, and Django Channels' layer. Written in the file only;
     /// the applications' ids, keys and secrets are `broadcast.yaml`.
     #[cfg(feature = "broadcast")]
@@ -107,10 +107,10 @@ impl GufiOptions {
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Broadcasting {
-    /// The broadcast application `gufi.broadcast(...)` publishes to when
+    /// The broadcast application `claviron.broadcast(...)` publishes to when
     /// a call names none.
     pub application: Option<String>,
-    /// Django Channels' channel layer, `gufi.channels.OrbitChannelLayer`,
+    /// Django Channels' channel layer, `claviron.channels.OrbitChannelLayer`,
     /// over the broadcast service's groups. Absent, the layer is not
     /// installed.
     #[cfg(feature = "django")]

@@ -11,7 +11,7 @@ homepage = "https://github.com/claviron"
 documentation = "https://docs.rs/gufi"
 keywords = ["python", "asgi", "claviron", "runtime", "websocket"]
 categories = ["web-programming::http-server", "api-bindings", "asynchronous"]
-include = ["/src/**", "/stubs/**", "/assets/gufi.svg", "/build.rs", "/Cargo.toml", "/README.md", "/LICENSE"]
+include = ["/src/**", "/assets/gufi.svg", "/build.rs", "/Cargo.toml", "/README.md", "/LICENSE"]
 # Carries the linked Python's directory to the application's `build.rs` as
 # `DEP_GUFI_PYTHON_LIB_DIR`; see `build.rs`.
 links = "gufi"
@@ -92,13 +92,13 @@ bench = ["axum", "claviron/bench"]
 metrics = ["claviron/metrics"]
 # Claviron's broadcast service in this process: Pusher-compatible channels a
 # browser subscribes to with pusher-js or Laravel Echo, reached over Orbit, and
-# `gufi.broadcast(...)` for the application to publish in process, with no
+# `claviron.broadcast(...)` for the application to publish in process, with no
 # HTTP round trip. Built in, the service runs and reads `broadcast.yaml` beside
 # the application; off by default, so an application that broadcasts nothing
 # carries none of it.
 broadcast = ["dep:claviron-broadcast", "claviron-broadcast/runner", "claviron-asgi/broadcast"]
 # Django additions in the ASGI engine: Channels' channel layer
-# (`gufi.channels.OrbitChannelLayer`) over the broadcast service's groups,
+# (`claviron.channels.OrbitChannelLayer`) over the broadcast service's groups,
 # configured by `broadcasting.channels` in gufi.yaml. The project installs
 # `channels` and `msgpack` itself.
 django = ["broadcast", "claviron-asgi/django"]
@@ -108,7 +108,7 @@ django = ["broadcast", "claviron-asgi/django"]
 files = ["axum", "claviron/files"]
 # Claviron's log pipeline for this application's fleet: the channels
 # `logging.yaml` beside it declares, written by the master's one writer, and
-# `gufi.LogHandler` putting Python's `logging` on them — what the
+# `claviron.LogHandler` putting Python's `logging` on them — what the
 # `claviron` log driver is to Laravel. `log-otlp` adds the OTLP adapter.
 log = ["claviron/log-pipeline", "claviron-asgi/log"]
 log-otlp = ["log", "claviron/log-otlp"]

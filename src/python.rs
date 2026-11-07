@@ -335,7 +335,7 @@ impl Runner {
                 // The owner: the interpreter, and whatever the application's
                 // routes do not claim. The broadcast service itself is its own
                 // crate's; what the launch adds is the application
-                // `gufi.broadcast` publishes to.
+                // `claviron.broadcast` publishes to.
                 let application = Arc::new(PythonApplicationService::new(
                     target,
                     root,
@@ -390,7 +390,7 @@ impl Runner {
             claviron::bench::runner::BenchService::register_with_alias_prefix(
                 state, "/_gufi",
             )?;
-            // The fleet's keyed counters: `gufi.counter(key)` in Python,
+            // The fleet's keyed counters: `claviron.counter(key)` in Python,
             // `CounterProvider` in Rust.
             claviron::orbit::register_counter(state)?;
 
