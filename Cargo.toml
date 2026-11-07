@@ -46,7 +46,6 @@ claviron = { workspace = true, features = [
     "runner",
     "runner-socket",
     "runner-orbit",
-    "runner-pipeline",
     "supervisor",
     "orbit",
 ] }
