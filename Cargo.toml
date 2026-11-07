@@ -52,7 +52,6 @@ claviron = { workspace = true, features = [
 ] }
 http = { version = "1.4" }
 thiserror = { version = "2.0" }
-tower-service = { version = "0.3" }
 tracing = { version = "0.1" }
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }
