@@ -192,6 +192,8 @@ impl GufiOptions {
                 return Err(format!("read {}: {error}", path.display()));
             }
         };
+        let text = claviron::runner::expand_launch(&text, &self.runner)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
         let written: Launch = serde_yaml::from_str(&text)
             .map_err(|error| format!("parse {}: {error}", path.display()))?;
         let written = Self::from_launch(written, None);
