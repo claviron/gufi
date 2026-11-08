@@ -6,9 +6,6 @@
 //! production listener policy. It accepts an already configured application
 //! and does not discover its environment.
 
-#[cfg(feature = "bench")]
-pub mod bench;
-
 mod application;
 /// The Python engine, retaining the runner's existing module path.
 pub use claviron_asgi::asgi;

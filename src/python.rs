@@ -391,10 +391,6 @@ impl Runner {
             Ok(())
         })
         .configure(move |state, _| {
-            #[cfg(feature = "bench")]
-            claviron::bench::runner::BenchService::register_with_alias_prefix(
-                state, "/_gufi",
-            )?;
             // The fleet's keyed counters: `claviron.counter(key)` in Python,
             // `CounterProvider` in Rust.
             claviron::orbit::register_counter(state)?;
