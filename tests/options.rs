@@ -11,8 +11,9 @@ fn launch() -> GufiOptions {
         runner: RunnerOptions {
             name: Some("checkout".to_owned()),
             orbit: true,
-            uds: Some("/run/checkout.sock".into()),
-            h2: true,
+            listeners: Some(serde_yaml::from_str(
+                "application:\n  transport: unix\n  listen: unix:/run/checkout.sock\n  protocols: h2\n",
+            ).unwrap()),
             trusted: vec![
                 "10.0.0.0/8".parse().unwrap(),
                 "::1".parse().unwrap(),
@@ -34,10 +35,9 @@ fn a_launch_survives_the_envelope() {
 
     assert_eq!(back.runner.name, sent.runner.name);
     assert_eq!(back.runner.orbit, sent.runner.orbit);
-    assert_eq!(back.runner.uds, sent.runner.uds);
+    assert_eq!(back.runner.listeners, sent.runner.listeners);
     assert_eq!(back.own.root, sent.root);
     assert_eq!(back.own.link_message_limit, sent.link_message_limit);
-    assert_eq!(back.runner.h2, sent.runner.h2);
     assert_eq!(
         back.runner.trusted.iter().map(ToString::to_string).collect::<Vec<_>>(),
         ["10.0.0.0/8", "::1"]
@@ -78,13 +78,15 @@ fn the_command_line_stands_over_the_file() {
     let directory = tempfile::tempdir().expect("temporary directory");
     std::fs::write(
         directory.path().join(super::CONFIG_FILE),
-        "workers: 4\norbit: true\nuds: /run/written.sock\n",
+        "workers: 4\norbit: true\nlisteners:\n  application:\n    transport: unix\n    listen: unix:/run/written.sock\n    protocols: h2\n",
     )
     .expect("write configuration");
 
     let resolved = GufiOptions {
         runner: RunnerOptions {
-            uds: Some("/run/typed.sock".into()),
+            listeners: Some(serde_yaml::from_str(
+                "application:\n  transport: unix\n  listen: unix:/run/typed.sock\n  protocols: h1\n",
+            ).unwrap()),
             ..Default::default()
         },
         config: Some(directory.path().join(super::CONFIG_FILE)),
@@ -94,9 +96,10 @@ fn the_command_line_stands_over_the_file() {
     .expect("resolve");
 
     assert_eq!(
-        resolved.runner.uds.as_deref(),
-        Some(std::path::Path::new("/run/typed.sock"))
+        resolved.runner.listeners.as_ref().unwrap()["application"]["listen"].as_str(),
+        Some("unix:/run/typed.sock")
     );
+    resolved.runner.validate().expect("valid named listener");
     // Untouched by the command line, so the file still decides.
     assert_eq!(resolved.runner.workers, Some(4));
     assert!(resolved.runner.orbit);

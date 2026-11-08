@@ -1,9 +1,8 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use claviron::http::trust::Network;
-use claviron::runner::{Bind, Composition, Protocols};
+use claviron::runner::Composition;
 use claviron::runtime::{AppState, Register, registry};
 
 use crate::application::PythonApplicationService;
@@ -151,19 +150,6 @@ impl Runner {
         self
     }
 
-    /// Also answer on a socket. Doors are capabilities, not alternatives: a
-    /// process may hold a lane in the fleet and a Unix socket at once.
-    pub fn listen(
-        mut self,
-        bind: Bind,
-    ) -> Self {
-        match bind {
-            Bind::Tcp(address) => self.launch.runner.tcp = Some(address),
-            Bind::Uds(path) => self.launch.runner.uds = Some(path),
-        }
-        self
-    }
-
     /// Whose forwarding headers to believe. Nobody, unless stated. A Unix
     /// socket is trusted whatever this says: opening it already took the
     /// operator's permission.
@@ -185,16 +171,6 @@ impl Runner {
         self.launch.runner.tls_cert = Some(tls.certificate);
         self.launch.runner.tls_key = Some(tls.key);
         self.launch.runner.tls_client_ca = tls.client_ca;
-        self
-    }
-
-    /// Which HTTP versions the sockets accept. Both, unless told otherwise.
-    pub fn protocols(
-        mut self,
-        protocols: Protocols,
-    ) -> Self {
-        self.launch.runner.h1 = protocols.h1;
-        self.launch.runner.h2 = protocols.h2;
         self
     }
 
@@ -297,12 +273,15 @@ impl Runner {
         // A process with no door would boot an interpreter nothing can reach.
         // The first thing a Python developer runs has no arguments, so that
         // case is a local listener rather than an error.
-        if launch.runner.tcp.is_none()
-            && launch.runner.uds.is_none()
+        if launch.runner.socket_listeners().map_err(Error::Registry)?.is_empty()
             && !launch.runner.orbit
         {
-            launch.runner.tcp =
-                Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000));
+            launch.runner.listeners = Some(
+                serde_yaml::from_str(
+                    "development:\n  transport: tcp\n  listen: 127.0.0.1:8000\n  protocols: [h1, h2]\n",
+                )
+                .map_err(|error| Error::Registry(error.to_string()))?,
+            );
         }
         // An interpreter is not reloaded in place: a change rolls the workers
         // over, so there have to be workers to roll.

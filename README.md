@@ -201,9 +201,13 @@ async fn hits(Provide(counter): Provide<CounterService>) -> impl IntoResponse {
 
 ## Development and production are different programs
 
-The HTTP listener here is for writing an application, not for serving one. It
-collects one request and one response and owns no TLS, vhost routing, static
-files or supervision — and its numbers are not performance evidence.
+Socket ingress uses Claviron's named `listeners` declarations and
+`defaults.listener` settings. Orbit takes its execution selection from the same
+defaults. Configure sockets through `GufiOptions.runner` or `gufi.yaml`, rather
+than the former `Bind` and `Protocols` builder methods. With no declared ingress,
+Gufi supplies a development listener at `127.0.0.1:8000`, accepting HTTP/1 and
+HTTP/2 prior knowledge. Each named socket uses Claviron's transport-owned
+Runnable and supervisor socket sharing.
 
 In production a Claviron edge terminates TLS, routes vhosts and serves static
 files, and reaches this process by name over Orbit shared memory instead of a
