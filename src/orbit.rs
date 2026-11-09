@@ -3,6 +3,7 @@
 //! left here is the name a lane answers to.
 
 /// Default Link text/binary bound, matching the Lua message adapter's 1 MiB.
+#[cfg(feature = "websocket")]
 pub(crate) const DEFAULT_MESSAGE_LIMIT: usize =
     claviron_asgi::websocket::DEFAULT_MESSAGE_LIMIT;
 

@@ -10,7 +10,7 @@ fn launch() -> GufiOptions {
     GufiOptions {
         runner: RunnerOptions {
             name: Some("checkout".to_owned()),
-            orbit: true,
+            orbit: Some(serde_yaml::from_str("{link: {}}").unwrap()),
             listeners: Some(serde_yaml::from_str(
                 "application:\n  transport: unix\n  listen: unix:/run/checkout.sock\n  protocols: h2\n",
             ).unwrap()),
@@ -78,7 +78,7 @@ fn the_command_line_stands_over_the_file() {
     let directory = tempfile::tempdir().expect("temporary directory");
     std::fs::write(
         directory.path().join(super::CONFIG_FILE),
-        "workers: 4\norbit: true\nlisteners:\n  application:\n    transport: unix\n    listen: unix:/run/written.sock\n    protocols: h2\n",
+        "workers: 4\norbit: {link: {}}\nlisteners:\n  application:\n    transport: unix\n    listen: unix:/run/written.sock\n    protocols: h2\n",
     )
     .expect("write configuration");
 
@@ -96,13 +96,14 @@ fn the_command_line_stands_over_the_file() {
     .expect("resolve");
 
     assert_eq!(
-        resolved.runner.listeners.as_ref().unwrap()["application"]["listen"].as_str(),
+        resolved.runner.listeners.as_ref().unwrap()["application"]["listen"]
+            .as_str(),
         Some("unix:/run/typed.sock")
     );
     resolved.runner.validate().expect("valid named listener");
     // Untouched by the command line, so the file still decides.
     assert_eq!(resolved.runner.workers, Some(4));
-    assert!(resolved.runner.orbit);
+    assert!(resolved.runner.link_enabled());
 }
 
 /// The directory a repository is checked out into is not always what the
@@ -216,8 +217,8 @@ fn the_supervisor_policy_travels_with_the_launch() {
 #[test]
 fn a_key_nobody_knows_is_refused() {
     let read: Launch =
-        serde_yaml::from_str("orbit: true\nvenv: .venv\n").unwrap();
-    assert!(read.runner.orbit);
+        serde_yaml::from_str("orbit: {link: {}}\nvenv: .venv\n").unwrap();
+    assert!(read.runner.link_enabled());
     assert_eq!(read.own.venv.as_deref(), Some(std::path::Path::new(".venv")));
 
     let typo = serde_yaml::from_str::<Launch>("orbitt: true\n");

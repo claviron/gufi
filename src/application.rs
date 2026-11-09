@@ -66,6 +66,7 @@ impl PythonApplicationService {
         PythonService::new(Arc::clone(&self.handle))
     }
 
+    #[cfg(feature = "websocket")]
     pub(crate) fn handle_cell(
         &self
     ) -> Arc<RwLock<Option<PythonApplicationHandle>>> {

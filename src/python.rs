@@ -146,7 +146,10 @@ impl Runner {
         mut self,
         orbit: bool,
     ) -> Self {
-        self.launch.runner.orbit = orbit;
+        self.launch.runner.orbit = orbit.then(|| {
+            serde_yaml::from_str("{link: {}}")
+                .expect("static Orbit configuration")
+        });
         self
     }
 
@@ -274,7 +277,7 @@ impl Runner {
         // The first thing a Python developer runs has no arguments, so that
         // case is a local listener rather than an error.
         if launch.runner.socket_listeners().map_err(Error::Registry)?.is_empty()
-            && !launch.runner.orbit
+            && !launch.runner.link_enabled()
         {
             launch.runner.listeners = Some(
                 serde_yaml::from_str(
@@ -342,17 +345,21 @@ impl Runner {
                     launch.own.broadcasting.clone().unwrap_or_default(),
                 ));
                 let python = application.service();
-                let handle = application.handle_cell();
-                let message_limit = launch
-                    .own
-                    .link_message_limit
-                    .map(std::num::NonZeroUsize::get)
-                    .unwrap_or(crate::orbit::DEFAULT_MESSAGE_LIMIT);
+                let owner = claviron::runner::Owner::new(python);
                 // A session on any door is the ASGI application's.
-                let owner = claviron::runner::Owner::new(python).upgrades(
-                    crate::websocket::Upgrades::new(Arc::clone(&handle))
-                        .message_limit(message_limit),
-                );
+                #[cfg(feature = "websocket")]
+                let owner = {
+                    let handle = application.handle_cell();
+                    let message_limit = launch
+                        .own
+                        .link_message_limit
+                        .map(std::num::NonZeroUsize::get)
+                        .unwrap_or(crate::orbit::DEFAULT_MESSAGE_LIMIT);
+                    owner.upgrades(
+                        crate::websocket::Upgrades::new(handle)
+                            .message_limit(message_limit),
+                    )
+                };
                 // A Pusher client's channels stand in front of the application.
                 #[cfg(feature = "broadcast")]
                 let owner = claviron_broadcast::runner::in_front(state, owner)?;

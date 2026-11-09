@@ -234,7 +234,7 @@ metadata is shared by local and linked observations.
 admin-client icon. The GUI maps known codes locally; absent/unknown codes retain
 the Python default. This hint never changes dispatch or loads an external asset.
 
-With `orbit: true`, the shared runner exposes the ASGI application to the
+With `orbit: {link: {}}`, the shared runner exposes the ASGI application to the
 existing Link management API, including gRPC through an edge. The target is
 runtime `asgi` and the configured application name; fleet and Link address
 select the runner, not another Python environment.
