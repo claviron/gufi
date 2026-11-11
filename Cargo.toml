@@ -26,8 +26,8 @@ license = "MIT"
 repository = "https://github.com/claviron/gufi"
 
 [workspace.dependencies]
-claviron = { version = "0.2.0-alpha.26", path = "../../claviron", default-features = false }
-claviron-broadcast = { version = "0.2.0-alpha.26", path = "../../backends/broadcast" }
+claviron = { version = "0.2.0-alpha.26", default-features = false }
+claviron-broadcast = { version = "0.2.0-alpha.26" }
 
 # Gufi compiles a Python application's own binary against Claviron. It
 # reaches Claviron the way any consumer does — through the root facade, never
@@ -36,7 +36,7 @@ claviron-broadcast = { version = "0.2.0-alpha.26", path = "../../backends/broadc
 bytes = { version = "1.11" }
 clap = { version = "4", features = ["derive"], optional = true }
 async-trait = { version = "0.1" }
-claviron-asgi = { version = "0.2.0-alpha.26", path = "../../embed/asgi" }
+claviron-asgi = { version = "0.2.0-alpha.26" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1.0" }
 serde_yaml = { version = "0.9" }
