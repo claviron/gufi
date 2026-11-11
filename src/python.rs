@@ -345,7 +345,12 @@ impl Runner {
                     launch.own.broadcasting.clone().unwrap_or_default(),
                 ));
                 let python = application.service();
-                let owner = claviron::runner::Owner::new(python);
+                let owner = claviron::runner::Owner::new(
+                    claviron::ExecutorSpec::Dedicated(
+                        claviron::ExecutorKind::CurrentThread,
+                    ),
+                    python,
+                );
                 // A session on any door is the ASGI application's.
                 #[cfg(feature = "websocket")]
                 let owner = {
