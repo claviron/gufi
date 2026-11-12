@@ -3,7 +3,7 @@
 #[cfg(feature = "axum")]
 use claviron::runtime::{AppState, registry};
 
-pub use claviron::runner::{AppRequest, RequestBody};
+pub use claviron_runner::{AppRequest, RequestBody};
 pub use claviron_asgi::routing::{
     AppResponse, BoxError, PythonService, ResponseBody, full_body,
 };
@@ -35,5 +35,5 @@ pub fn register_router<F>(
 where
     F: FnOnce(AppState) -> claviron::axum::Router,
 {
-    claviron::runner::register_router(state, router)
+    claviron_runner::register_router(state, router)
 }

@@ -35,10 +35,10 @@ pub use claviron::http::trust::Trust;
 #[cfg(feature = "axum")]
 pub use claviron::pipeline::routing::Routable;
 #[cfg(feature = "tls")]
-pub use claviron::runner::Tls;
+pub use claviron_runner::Tls;
 #[cfg(feature = "files")]
-pub use claviron::runner::files::FilesSource;
-pub use claviron::runner::{Owner, register_router_with};
+pub use claviron_runner::files::FilesSource;
+pub use claviron_runner::{EdgeShutdownInitiated, Owner, register_router_with};
 #[cfg(feature = "broadcast")]
 pub use options::Broadcasting;
 #[cfg(feature = "django")]

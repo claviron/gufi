@@ -26,36 +26,13 @@ license = "MIT"
 repository = "https://github.com/claviron/gufi"
 
 [workspace.dependencies]
-claviron = { version = "0.2.0-alpha.26", default-features = false }
+claviron = { version = "0.2.0-alpha.26.1", path = "../../claviron", default-features = false }
 claviron-broadcast = { version = "0.2.0-alpha.26" }
 
 # Gufi compiles a Python application's own binary against Claviron. It
 # reaches Claviron the way any consumer does — through the root facade, never
 # its internal crates — which is why it lives beside Claviron, not inside it.
 [dependencies]
-bytes = { version = "1.11" }
-clap = { version = "4", features = ["derive"], optional = true }
-async-trait = { version = "0.1" }
-claviron-asgi = { version = "0.2.0-alpha.26" }
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1.0" }
-serde_yaml = { version = "0.9" }
-toml_edit = { version = "0.25", default-features = false, features = ["parse"] }
-claviron = { workspace = true, features = [
-    "http",
-    "runner",
-    "runner-socket",
-    "runner-orbit",
-    "supervisor",
-    "orbit",
-] }
-http = { version = "1.4" }
-thiserror = { version = "2.0" }
-tracing = { version = "0.1" }
-tokio = { version = "1", features = ["full"] }
-tokio-util = { version = "0.7", features = ["rt"] }
-claviron-broadcast = { workspace = true, optional = true }
-
 # axum is the default road, the way it is in Claviron: `register` puts the
 # interpreter behind your router for you, and the router type comes from
 # `claviron::axum` — the one this workspace resolves — so an application never
@@ -64,27 +41,44 @@ claviron-broadcast = { workspace = true, optional = true }
 # It is a feature rather than a fixture because the other roads stay open:
 # `register_with` needs only `tower-service`, and a warp filter or a bare
 # `service_fn` goes through it with no axum in the graph at all.
+claviron-runner = { version = "0.2.0-alpha.26.1", path = "../runner", default-features = false, features = ["socket", "orbit", "supervisor"] }
+claviron-broadcast = { workspace = true, optional = true }
+claviron = { workspace = true }
+bytes = { version = "1.11" }
+clap = { version = "4", features = ["derive"], optional = true }
+async-trait = { version = "0.1" }
+claviron-asgi = { version = "0.2.0-alpha.26" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1.0" }
+serde_yaml = { version = "0.9" }
+toml_edit = { version = "0.25", default-features = false, features = ["parse"] }
+http = { version = "1.4" }
+thiserror = { version = "2.0" }
+tracing = { version = "0.1" }
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+
 [dev-dependencies]
 tempfile = "3"
 
 [features]
 default = ["axum"]
-axum = ["claviron/axum"]
+axum = ["claviron-runner/axum"]
 # A command line for the application's own `main` to read. Off by default
 # because argv belongs to the binary, not to a library: the starter kit turns
 # it on where an operator can see the line and delete it.
-cli = ["dep:clap", "claviron/runner-cli"]
+cli = ["dep:clap", "claviron-runner/cli"]
 # Serving HTTPS on a TCP door, and requiring a client certificate on it. Off
 # by default: most deployments put this process behind something that already
 # terminated TLS.
-tls = ["claviron/tls"]
+tls = ["claviron-runner/tls"]
 # WebSocket on gufi's own listener, spoken by the runner shell. Over Orbit the edge speaks
 # the protocol and this is not needed.
-websocket = ["claviron/websocket", "claviron-asgi/websocket"]
+websocket = ["claviron-runner/websocket", "claviron-asgi/websocket"]
 # LEGACY_LINUX: run on Linux kernels older than 5.3 (AlmaLinux 8's 4.18),
 # which have no pidfd for watching worker processes. Off by default.
 legacy-linux = ["claviron/legacy-linux"]
-metrics = ["claviron/metrics"]
+metrics = ["claviron-runner/metrics"]
 # Claviron's broadcast service in this process: Pusher-compatible channels a
 # browser subscribes to with pusher-js or Laravel Echo, reached over Orbit, and
 # `claviron.broadcast(...)` for the application to publish in process, with no
@@ -100,7 +94,7 @@ django = ["broadcast", "claviron-asgi/django"]
 # Static mounts in front of the application (`files:` in gufi.yaml), served by
 # Claviron's file service — what runserver's static handling or WhiteNoise
 # does, for a process no edge stands in front of. No edge comes with it.
-files = ["axum", "claviron/files"]
+files = ["axum", "claviron/files", "claviron-runner/files"]
 # Claviron's log pipeline for this application's fleet: the channels
 # `logging.yaml` beside it declares, written by the master's one writer, and
 # `claviron.LogHandler` putting Python's `logging` on them — what the
@@ -110,7 +104,7 @@ log-otlp = ["log", "claviron/log-otlp"]
 # Development's reload: the master watches the application's Python with the
 # platform's native notifications and asks for a rolling worker restart on a
 # change. Needs two or more workers; production carries no watcher.
-watch = ["claviron/runner-watch"]
+watch = ["claviron-runner/watch"]
 
 # Claviron's release settings, so what this crate measures on its own — its
 # benches — is built the way the binaries that embed it are. A library's

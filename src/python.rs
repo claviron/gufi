@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use claviron::http::trust::Network;
-use claviron::runner::Composition;
+use claviron_runner::Composition;
 use claviron::runtime::{AppState, Register, registry};
 
 use crate::application::PythonApplicationService;
@@ -345,7 +345,7 @@ impl Runner {
                     launch.own.broadcasting.clone().unwrap_or_default(),
                 ));
                 let python = application.service();
-                let owner = claviron::runner::Owner::new(
+                let owner = claviron_runner::Owner::new(
                     claviron::ExecutorSpec::Dedicated(
                         claviron::ExecutorKind::CurrentThread,
                     ),

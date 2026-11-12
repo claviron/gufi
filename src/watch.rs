@@ -14,13 +14,13 @@
 //! over to — the supervisor does not stop the last running worker — so the
 //! launch is refused rather than restarting by cutting requests.
 //!
-//! The watching itself is the runner shell's (`claviron::runner::watch`);
+//! The watching itself is the runner shell's (`claviron_runner::watch`);
 //! what is Python's is what counts as source and what a change does.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use claviron::runner::watch::{Reaction, Source, SourceWatcher};
+use claviron_runner::watch::{Reaction, Source, SourceWatcher};
 
 /// Python source; what the application root holds that is not source; and,
 /// with no paths written, every directory of the root but those.

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-pub use claviron::runner::RunnerOptions;
+pub use claviron_runner::RunnerOptions;
 
 /// Options for a launch.
 ///
@@ -69,7 +69,7 @@ pub(crate) struct Python {
 }
 
 /// A launch as gufi writes and carries it: the runner's options and its own.
-pub(crate) type Launch = claviron::runner::launch::Launch<Python>;
+pub(crate) type Launch = claviron_runner::launch::Launch<Python>;
 
 impl GufiOptions {
     /// The launch these options state.
@@ -192,7 +192,7 @@ impl GufiOptions {
                 return Err(format!("read {}: {error}", path.display()));
             }
         };
-        let text = claviron::runner::expand_launch(&text, &self.runner)
+        let text = claviron_runner::expand_launch(&text, &self.runner)
             .map_err(|error| format!("{}: {error}", path.display()))?;
         let written: Launch = serde_yaml::from_str(&text)
             .map_err(|error| format!("parse {}: {error}", path.display()))?;
