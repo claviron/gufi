@@ -20,13 +20,13 @@ links = "gufi"
 resolver = "3"
 
 [workspace.package]
-version = "0.2.0-alpha.26.1"
+version = "0.2.1"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/claviron/gufi"
 
 [workspace.dependencies]
-claviron = { version = "0.2.0-alpha.26.1", path = "../../claviron", default-features = false }
+claviron = { version = "0.2.1", default-features = false }
 claviron-broadcast = { version = "0.2.0-alpha.26" }
 
 # Gufi compiles a Python application's own binary against Claviron. It
@@ -41,7 +41,7 @@ claviron-broadcast = { version = "0.2.0-alpha.26" }
 # It is a feature rather than a fixture because the other roads stay open:
 # `register_with` needs only `tower-service`, and a warp filter or a bare
 # `service_fn` goes through it with no axum in the graph at all.
-claviron-runner = { version = "0.2.0-alpha.26.1", path = "../runner", default-features = false, features = ["socket", "orbit", "supervisor"] }
+claviron-runner = { version = "0.2.1", default-features = false, features = ["socket", "orbit", "supervisor"] }
 claviron-broadcast = { workspace = true, optional = true }
 claviron = { workspace = true }
 bytes = { version = "1.11" }

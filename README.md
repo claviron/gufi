@@ -54,12 +54,10 @@ you already have.
 
 ```toml
 [dependencies]
-gufi     = "0.2.0-alpha.26"
+gufi     = "0.2.1"
 tokio    = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 axum     = "0.8"   # or warp, or nothing — see "Your router stays yours"
 ```
-
-APIs and configuration may change between alpha releases.
 
 The examples use Claviron through Gufi's `gufi::claviron` re-export.
 
