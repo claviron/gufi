@@ -1,12 +1,12 @@
 [package]
 autotests = false
 name = "gufi"
-version.workspace = true
-edition.workspace = true
+version = "0.2.3"
+edition = "2024"
 description = "Python runner for Claviron runtime"
 publish = true
-license.workspace = true
-repository.workspace = true
+license = "MIT"
+repository = "https://github.com/claviron/gufi"
 homepage = "https://github.com/claviron"
 documentation = "https://docs.rs/gufi"
 keywords = ["python", "asgi", "claviron", "runtime", "websocket"]
@@ -16,25 +16,19 @@ include = ["/src/**", "/assets/gufi.svg", "/build.rs", "/Cargo.toml", "/README.m
 # `DEP_GUFI_PYTHON_LIB_DIR`; see `build.rs`.
 links = "gufi"
 
+# Its own workspace root, so no enclosing directory's workspace adopts it.
 [workspace]
 resolver = "3"
-
-[workspace.package]
-version = "0.2.3"
-edition = "2024"
-license = "MIT"
-repository = "https://github.com/claviron/gufi"
-
-[workspace.dependencies]
-claviron = { version = "0.2.5", default-features = false }
-claviron-broadcast = { version = "0.2.2" }
-claviron-runner = { version = "0.2.1", default-features = false, features = ["socket", "orbit", "supervisor"] }
-claviron-python = { version = "0.2.5", features = ["asgi"] }
 
 # Gufi compiles a Python application's own binary against Claviron. It
 # reaches Claviron the way any consumer does — through the root facade, never
 # its internal crates — which is why it lives beside Claviron, not inside it.
 [dependencies]
+
+# ── Claviron packages ────────────────────────────────────────────────
+claviron = { version = "0.2.5", default-features = false }
+claviron-broadcast = { version = "0.2.2", optional = true }
+claviron-python = { version = "0.2.5", features = ["asgi"] }
 # axum is the default road, the way it is in Claviron: `register` puts the
 # interpreter behind your router for you, and the router type comes from
 # `claviron::axum` — the one this workspace resolves — so an application never
@@ -43,25 +37,27 @@ claviron-python = { version = "0.2.5", features = ["asgi"] }
 # It is a feature rather than a fixture because the other roads stay open:
 # `register_with` needs only `tower-service`, and a warp filter or a bare
 # `service_fn` goes through it with no axum in the graph at all.
-claviron-runner = { workspace = true, default-features = false, features = ["socket", "orbit", "supervisor"] }
-claviron-python = { workspace = true, features = ["asgi"] }
-claviron-broadcast = { workspace = true, optional = true }
-claviron = { workspace = true }
+claviron-runner = { version = "0.2.1", default-features = false, features = ["socket", "orbit", "supervisor"] }
 
-bytes = { version = "1.11" }
+# ── Async runtime & primitives ───────────────────────────────────────
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt"] }
+tokio-util = "0.7"
+
+# ── CLI ──────────────────────────────────────────────────────────────
 clap = { version = "4", features = ["derive"], optional = true }
-async-trait = { version = "0.1" }
+
+# ── Serialization & parsing ──────────────────────────────────────────
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1.0" }
-serde_yaml = { version = "0.9" }
+serde_yaml = "0.9"
 toml_edit = { version = "0.25", default-features = false, features = ["parse"] }
-http = { version = "1.4" }
-thiserror = { version = "2.0" }
-tracing = { version = "0.1" }
-tokio = { version = "1", features = ["full"] }
-tokio-util = { version = "0.7", features = ["rt"] }
+
+# ── Errors & diagnostics ─────────────────────────────────────────────
+thiserror = "2.0"
+tracing = "0.1"
 
 [dev-dependencies]
+serde_json = "1.0"
 tempfile = "3"
 
 [features]
