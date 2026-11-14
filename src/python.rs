@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use claviron::http::trust::Network;
-use claviron_runner::Composition;
 use claviron::runtime::{AppState, Register, registry};
+use claviron_runner::Composition;
 
 use crate::application::PythonApplicationService;
 use crate::options::Launch;

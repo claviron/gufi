@@ -5,7 +5,7 @@
 /// Default Link text/binary bound, matching the Lua message adapter's 1 MiB.
 #[cfg(feature = "websocket")]
 pub(crate) const DEFAULT_MESSAGE_LIMIT: usize =
-    claviron_asgi::websocket::DEFAULT_MESSAGE_LIMIT;
+    claviron_python::websocket::DEFAULT_MESSAGE_LIMIT;
 
 /// What the lane says serves this application's name. A PHP application given
 /// the same name is refused at its join rather than splitting this one's

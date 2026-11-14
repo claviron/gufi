@@ -26,8 +26,10 @@ license = "MIT"
 repository = "https://github.com/claviron/gufi"
 
 [workspace.dependencies]
-claviron = { version = "0.2.1", default-features = false }
+claviron = { version = "0.2.5", default-features = false }
 claviron-broadcast = { version = "0.2.2" }
+claviron-runner = { version = "0.2.1", default-features = false, features = ["socket", "orbit", "supervisor"] }
+claviron-python = { version = "0.2.5", features = ["asgi"] }
 
 # Gufi compiles a Python application's own binary against Claviron. It
 # reaches Claviron the way any consumer does — through the root facade, never
@@ -41,13 +43,14 @@ claviron-broadcast = { version = "0.2.2" }
 # It is a feature rather than a fixture because the other roads stay open:
 # `register_with` needs only `tower-service`, and a warp filter or a bare
 # `service_fn` goes through it with no axum in the graph at all.
-claviron-runner = { version = "0.2.1", default-features = false, features = ["socket", "orbit", "supervisor"] }
+claviron-runner = { workspace = true, default-features = false, features = ["socket", "orbit", "supervisor"] }
+claviron-python = { workspace = true, features = ["asgi"] }
 claviron-broadcast = { workspace = true, optional = true }
 claviron = { workspace = true }
+
 bytes = { version = "1.11" }
 clap = { version = "4", features = ["derive"], optional = true }
 async-trait = { version = "0.1" }
-claviron-asgi = { version = "0.2.4" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1.0" }
 serde_yaml = { version = "0.9" }
@@ -74,7 +77,7 @@ cli = ["dep:clap", "claviron-runner/cli"]
 tls = ["claviron-runner/tls"]
 # WebSocket on gufi's own listener, spoken by the runner shell. Over Orbit the edge speaks
 # the protocol and this is not needed.
-websocket = ["claviron-runner/websocket", "claviron-asgi/websocket"]
+websocket = ["claviron-runner/websocket", "claviron-python/websocket"]
 # LEGACY_LINUX: run on Linux kernels older than 5.3 (AlmaLinux 8's 4.18),
 # which have no pidfd for watching worker processes. Off by default.
 legacy-linux = ["claviron/legacy-linux"]
@@ -85,12 +88,12 @@ metrics = ["claviron-runner/metrics"]
 # HTTP round trip. Built in, the service runs and reads `broadcast.yaml` beside
 # the application; off by default, so an application that broadcasts nothing
 # carries none of it.
-broadcast = ["dep:claviron-broadcast", "claviron-broadcast/runner", "claviron-asgi/broadcast"]
+broadcast = ["dep:claviron-broadcast", "claviron-broadcast/runner", "claviron-python/broadcast"]
 # Django additions in the ASGI engine: Channels' channel layer
 # (`claviron.channels.OrbitChannelLayer`) over the broadcast service's groups,
 # configured by `broadcasting.channels` in gufi.yaml. The project installs
 # `channels` and `msgpack` itself.
-django = ["broadcast", "claviron-asgi/django"]
+django = ["broadcast", "claviron-python/django"]
 # Static mounts in front of the application (`files:` in gufi.yaml), served by
 # Claviron's file service — what runserver's static handling or WhiteNoise
 # does, for a process no edge stands in front of. No edge comes with it.
@@ -99,7 +102,7 @@ files = ["axum", "claviron/files", "claviron-runner/files"]
 # `logging.yaml` beside it declares, written by the master's one writer, and
 # `claviron.LogHandler` putting Python's `logging` on them — what the
 # `claviron` log driver is to Laravel. `log-otlp` adds the OTLP adapter.
-log = ["claviron/log-pipeline", "claviron-asgi/log"]
+log = ["claviron/log-pipeline", "claviron-python/log"]
 log-otlp = ["log", "claviron/log-otlp"]
 # Development's reload: the master watches the application's Python with the
 # platform's native notifications and asks for a rolling worker restart on a

@@ -8,7 +8,7 @@
 
 mod application;
 /// The Python engine, retaining the runner's existing module path.
-pub use claviron_asgi::asgi;
+pub use claviron_python::asgi;
 mod framework;
 mod management;
 pub(crate) mod options;
@@ -18,7 +18,7 @@ pub mod routing;
 #[cfg(feature = "watch")]
 mod watch;
 #[cfg(feature = "websocket")]
-pub use claviron_asgi::websocket;
+pub use claviron_python::websocket;
 
 /// The Claviron facade used by this Gufi build, without a separate dependency.
 pub use claviron;

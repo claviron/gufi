@@ -17,7 +17,7 @@ production build with PGO and LTO.
 | Package | Responsibility |
 | --- | --- |
 | `gufi` | Application runner, launch configuration, lifecycle registration and HTTP/Orbit ingress. |
-| [`claviron-asgi`](https://github.com/claviron/asgi) | CPython/PyO3, ASGI lifespan, streaming HTTP/message execution and the native Python module. |
+| [`claviron-python`](https://github.com/claviron/python) | CPython/PyO3, ASGI lifespan, streaming HTTP/message execution and the native Python module. |
 
 `gufi::Runner`, `gufi::asgi` and the existing HTTP service types retain their
 public paths. Application build scripts also keep using
@@ -171,7 +171,7 @@ rather than leaving over a socket.
 
 The engine installs this native module at runtime; it is not a Python package in
 the application's virtual environment. The stubs in
-[`claviron-asgi`](https://github.com/claviron/asgi) describe invocation, counters,
+[`claviron-python`](https://github.com/claviron/python) describe invocation, counters,
 broadcasting, logging and the optional Django Channels layer. They contain type
 declarations only, not a Python implementation or a fallback runtime.
 
@@ -209,7 +209,7 @@ Runnable and supervisor socket sharing.
 
 In production a Claviron edge terminates TLS, routes vhosts and serves static
 files, and reaches this process by name over Orbit shared memory instead of a
-socket. This is the runner's deployment topology. Hosts embedding `claviron-asgi`
+socket. This is the runner's deployment topology. Hosts embedding `claviron-python`
 directly own their ingress and application lifetime, within the engine's
 process-wide interpreter and environment constraints.
 
