@@ -11,10 +11,7 @@ homepage = "https://github.com/claviron"
 documentation = "https://docs.rs/gufi"
 keywords = ["python", "asgi", "claviron", "runtime", "websocket"]
 categories = ["web-programming::http-server", "api-bindings", "asynchronous"]
-include = ["/src/**", "/assets/gufi.svg", "/build.rs", "/Cargo.toml", "/README.md", "/LICENSE"]
-# Carries the linked Python's directory to the application's `build.rs` as
-# `DEP_GUFI_PYTHON_LIB_DIR`; see `build.rs`.
-links = "gufi"
+include = ["/src/**", "/assets/gufi.svg", "/Cargo.toml", "/README.md", "/LICENSE"]
 
 # Its own workspace root, so no enclosing directory's workspace adopts it.
 [workspace]
@@ -26,9 +23,9 @@ resolver = "3"
 [dependencies]
 
 # ── Claviron packages ────────────────────────────────────────────────
-claviron = { version = "0.2.5", default-features = false }
+claviron = { version = "0.2.7", default-features = false }
 claviron-broadcast = { version = "0.2.2", optional = true }
-claviron-python = { version = "0.2.5", features = ["asgi"] }
+claviron-python = { version = "0.2.8", features = ["asgi"] }
 # axum is the default road, the way it is in Claviron: `register` puts the
 # interpreter behind your router for you, and the router type comes from
 # `claviron::axum` — the one this workspace resolves — so an application never

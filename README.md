@@ -20,9 +20,10 @@ production build with PGO and LTO.
 | [`claviron-python`](https://github.com/claviron/python) | CPython/PyO3, ASGI lifespan, streaming HTTP/message execution and the native Python module. |
 
 `gufi::Runner`, `gufi::asgi` and the existing HTTP service types retain their
-public paths. Application build scripts also keep using
-`DEP_GUFI_PYTHON_LIB_DIR`; the runner forwards it from the engine. Python code
-imports `claviron`.
+public paths. Python code imports `claviron`. An application binary finds its
+shared libpython through the rpath its own `build.rs` adds with
+`pyo3_build_config::add_libpython_rpath_link_args()`, as the
+[`claviron-python` README](https://github.com/claviron/python#building) shows.
 
 The engine package can be embedded by a host that owns its own
 routing and lifecycle, without the Gufi runner or its ingress. Its base
